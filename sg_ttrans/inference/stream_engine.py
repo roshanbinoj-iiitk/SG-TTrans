@@ -54,6 +54,8 @@ class StreamEngine:
 
         # State memory
         self.ear_history: list[float] = []
+        self.ear_baseline_history: list[float] = []
+        self.nominal_ear: float = 0.28
         self.prev_kinematics: np.ndarray | None = None
         self.last_result: dict = {
             "rsi": 0.0,
@@ -115,11 +117,18 @@ class StreamEngine:
             mar = 0.20
             yaw, pitch, roll = 0.0, 0.0, 0.0
 
+        # Update nominal open-eye baseline if eyes are open
+        if has_face and ear > 0.18 and len(self.ear_baseline_history) < 60:
+            self.ear_baseline_history.append(ear)
+            self.nominal_ear = float(np.median(self.ear_baseline_history))
+
+        effective_ear_thresh = max(0.16, min(0.24, self.nominal_ear * 0.72))
+
         # Update EAR history for PERCLOS
         self.ear_history.append(ear)
         if len(self.ear_history) > self.cfg.perclos_window:
             self.ear_history.pop(0)
-        perclos = compute_perclos(self.ear_history, threshold=self.cfg.delta_ear)
+        perclos = compute_perclos(self.ear_history, threshold=effective_ear_thresh)
 
         # Assemble 16-D kinematic token
         euler = np.array([yaw, pitch, roll], dtype=np.float32)
@@ -138,6 +147,23 @@ class StreamEngine:
         # Push to FIFO sliding window buffer
         self.buffer.push(frame_tensor, torch.from_numpy(kin_token))
 
+        # Compute real-time physiological fatigue indicators
+        eye_closure_detected = (ear < effective_ear_thresh)
+        yawn_detected = (mar > 0.40)
+        head_nod_detected = (pitch < -14.0)
+        distracted_detected = (abs(yaw) > 28.0)
+
+        # Base fatigue estimation from landmarks
+        landmark_fatigue = 0.0
+        if eye_closure_detected:
+            landmark_fatigue = max(landmark_fatigue, min(1.0, (effective_ear_thresh - ear) / 0.08 + 0.3))
+        if perclos > 0.20:
+            landmark_fatigue = max(landmark_fatigue, min(1.0, perclos * 1.5))
+        if yawn_detected:
+            landmark_fatigue = max(landmark_fatigue, 0.75)
+        if head_nod_detected:
+            landmark_fatigue = max(landmark_fatigue, 0.70)
+
         # Perform inference once buffer has accumulated sequence_length frames
         if self.buffer.is_ready():
             seq_frames, seq_kin = self.buffer.get_sequence()
@@ -148,14 +174,37 @@ class StreamEngine:
                 outputs = self.model(seq_frames, seq_kin)
                 probs = outputs["probs"][0].cpu().numpy()
                 state_idx = int(np.argmax(probs))
-                state_names = ["Alert", "Drowsy"] if self.cfg.num_classes == 2 else DRIVER_STATE_NAMES
-                driver_state = state_names[state_idx] if state_idx < len(state_names) else f"State_{state_idx}"
                 confidence = float(probs[state_idx])
-                fatigue_prob = float(outputs["fatigue_prob"][0].cpu().item())
+                nn_fatigue = float(outputs["fatigue_prob"][0].cpu().item())
+
+            # Fuse neural prediction with real-time biometric indicators
+            fatigue_prob = float(max(nn_fatigue, landmark_fatigue))
 
             # Update persistence tracker
-            is_fatigued = (state_idx in [1, 2]) or (fatigue_prob > 0.5)
-            tau_persist = self.persistence_tracker.update(is_fatigued)
+            curr_fatigued = eye_closure_detected or yawn_detected or head_nod_detected or (landmark_fatigue > 0.35) or (nn_fatigue > 0.45)
+            tau_persist = self.persistence_tracker.update(curr_fatigued)
+
+            # Determine granular driver state
+            if yawn_detected:
+                driver_state = "Yawn"
+                state_idx = 3
+                confidence = max(confidence, 0.90)
+            elif eye_closure_detected and tau_persist >= 0.8:
+                driver_state = "Microsleep"
+                state_idx = 2
+                confidence = max(confidence, 0.95)
+            elif (state_idx == 1) or (fatigue_prob > 0.35) or (perclos > 0.25) or eye_closure_detected or head_nod_detected:
+                driver_state = "Drowsy"
+                state_idx = 1
+                confidence = max(confidence, fatigue_prob)
+            elif distracted_detected:
+                driver_state = "Distracted"
+                state_idx = 4
+                confidence = max(confidence, 0.85)
+            else:
+                driver_state = "Alert"
+                state_idx = 0
+                confidence = max(confidence, 1.0 - fatigue_prob)
 
             # Compute Dynamic RSI and ADAS Intervention
             rsi = compute_rsi(
@@ -186,12 +235,53 @@ class StreamEngine:
                 "roll": roll
             }
         else:
-            self.last_result["ear"] = ear
-            self.last_result["mar"] = mar
-            self.last_result["perclos"] = perclos
-            self.last_result["yaw"] = yaw
-            self.last_result["pitch"] = pitch
-            self.last_result["roll"] = roll
+            fatigue_prob = landmark_fatigue
+            is_fatigued = (landmark_fatigue > 0.40) or eye_closure_detected or yawn_detected
+            tau_persist = self.persistence_tracker.update(is_fatigued)
+
+            if yawn_detected:
+                driver_state = "Yawn"
+                state_idx = 3
+            elif eye_closure_detected and tau_persist > 1.0:
+                driver_state = "Microsleep"
+                state_idx = 2
+            elif is_fatigued:
+                driver_state = "Drowsy"
+                state_idx = 1
+            elif distracted_detected:
+                driver_state = "Distracted"
+                state_idx = 4
+            else:
+                driver_state = "Alert"
+                state_idx = 0
+
+            rsi = compute_rsi(
+                fatigue_prob=fatigue_prob,
+                tau_persist=tau_persist,
+                velocity=velocity,
+                ttc=ttc,
+                pitch=pitch,
+                yaw=yaw,
+                config=self.cfg
+            )
+            adas_action = self.adas_controller.evaluate(rsi)
+
+            self.last_result = {
+                "rsi": rsi,
+                "driver_state": driver_state,
+                "state_idx": state_idx,
+                "confidence": 0.90,
+                "fatigue_prob": fatigue_prob,
+                "tau_persist": tau_persist,
+                "adas_level": int(adas_action.level),
+                "adas_action": adas_action.name,
+                "ear": ear,
+                "mar": mar,
+                "perclos": perclos,
+                "yaw": yaw,
+                "pitch": pitch,
+                "roll": roll
+            }
 
         # Draw real-time HUD on copy of current frame
         hud_frame = self.render_hud(bgr_frame, self.last_result, landmarks_68, velocity, ttc)

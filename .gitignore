@@ -6,3 +6,4 @@ __pycache__/
 .env
 checkpoints/*.pt
 data
+*.task

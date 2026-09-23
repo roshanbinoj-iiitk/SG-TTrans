@@ -41,13 +41,16 @@ def compute_mar(mouth_pts: np.ndarray, eps: float = 1e-7) -> float:
     """
     if len(mouth_pts) < 7:
         return 0.0
-    # In standard 7-point slice: [p12, p13, p14, p15, p16, p17, p18]
+    # In standard slice [p12, p13, p14, p15, p16, p17, p18, p19]:
+    # p12 is left corner (pt 0), p16 is right corner (pt 4)
+    # p14 (upper left: pt 1 or 2), p18 (lower left: pt 7 or 6)
+    # p15 (upper right: pt 3), p17 (lower right: pt 5)
     p12 = mouth_pts[0]
-    p14 = mouth_pts[2]
+    p14 = mouth_pts[1] if len(mouth_pts) >= 8 else mouth_pts[2]
     p15 = mouth_pts[3]
     p16 = mouth_pts[4]
     p17 = mouth_pts[5]
-    p18 = mouth_pts[6]
+    p18 = mouth_pts[7] if len(mouth_pts) >= 8 else mouth_pts[6]
     
     vert1 = float(np.linalg.norm(p14 - p18))
     vert2 = float(np.linalg.norm(p15 - p17))

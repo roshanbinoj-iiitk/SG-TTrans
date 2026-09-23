@@ -22,7 +22,7 @@ def main():
     parser.add_argument("--ttc", type=float, default=5.0, help="Initial forward radar Time-to-Collision (s)")
     parser.add_argument("--fps", type=float, default=30.0, help="Target processing FPS")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device (cuda/cpu)")
-    parser.add_argument("--max_frames", type=int, default=300, help="Max frames for headless run (0 for infinite)")
+    parser.add_argument("--max_frames", type=int, default=0, help="Max frames to process (0 for continuous until closed)")
     parser.add_argument("--headless", action="store_true", help="Run without opening GUI window")
     parser.add_argument("--checkpoint", type=str, default="", help="Path to trained model checkpoint (.pt)")
     args = parser.parse_args()
@@ -46,12 +46,13 @@ def main():
     print("   [1] Scenario A: Normal Driving (v=80, TTC=8.0, Alert)")
     print("   [2] Scenario B: Moderate Yawning (v=90, TTC=3.5, Yawn)")
     print("   [3] Scenario C: Critical Micro-sleep (v=110, TTC=1.4 -> 0.9, AEB)")
-    print("   [Q] Quit Demo")
+    print("   [Q/ESC] Quit Demo (or close display window)")
     print("="*60 + "\n")
 
     velocity = args.velocity
     ttc = args.ttc
     frame_idx = 0
+    consecutive_fails = 0
     start_time = time.time()
 
     # Pre-generate synthetic sequence if synthetic mode
@@ -73,25 +74,36 @@ def main():
             else:
                 ret, frame = cap.read()
                 if not ret:
-                    print("End of video stream reached.")
-                    break
+                    consecutive_fails += 1
+                    if consecutive_fails > 10:
+                        print("End of video stream reached.")
+                        break
+                    time.sleep(0.01)
+                    continue
+                consecutive_fails = 0
 
             # Process frame through SG-TTrans
             res, hud_frame = engine.process_frame(frame, velocity=velocity, ttc=ttc)
 
-            # Print console telemetry every 30 frames
-            if frame_idx % 30 == 0:
+            # Print console telemetry every 15 frames
+            if frame_idx % 15 == 0:
                 elapsed = time.time() - start_time
-                fps_actual = frame_idx / elapsed
-                print(f"[Frame {frame_idx:04d} | {fps_actual:.1f} FPS] State: {res['driver_state']:<12} | "
-                      f"RSI: {res['rsi']:.3f} | ADAS: {res['adas_action']} | v: {velocity:.0f} km/h | TTC: {ttc:.1f}s")
+                fps_actual = frame_idx / elapsed if elapsed > 0 else 0
+                print(f"[Frame {frame_idx:04d} | {fps_actual:.1f} FPS] State: {res['driver_state']:<11} | "
+                      f"EAR: {res['ear']:.2f} | MAR: {res['mar']:.2f} | RSI: {res['rsi']:.3f} | ADAS: {res['adas_action']}")
 
             if not args.headless:
                 cv2.imshow("SG-TTrans ADAS In-Cabin Monitor", hud_frame)
                 key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
+                if key == ord('q') or key == 27:
                     break
-                elif key == ord('1'):  # Scenario A
+                try:
+                    if cv2.getWindowProperty("SG-TTrans ADAS In-Cabin Monitor", cv2.WND_PROP_VISIBLE) < 1:
+                        break
+                except Exception:
+                    pass
+
+                if key == ord('1'):  # Scenario A
                     velocity, ttc = 80.0, 8.0
                     print(">> Triggered Scenario A: Normal Blink (Level 0)")
                 elif key == ord('2'):  # Scenario B
