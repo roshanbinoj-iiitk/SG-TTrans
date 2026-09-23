@@ -22,14 +22,28 @@ class StreamEngine:
     Real-time streaming engine coupling dual-stream feature extraction,
     TDDA sequence inference, RSI risk calculation, and ADAS control.
     """
-    def __init__(self, config: SGTransConfig | None = None, device: str = "cpu"):
-        self.cfg = config if config is not None else SGTransConfig()
+    def __init__(self, config: SGTransConfig | None = None, device: str = "cpu", checkpoint_path: str | None = None):
         self.device = torch.device(device)
+
+        # Load checkpoint config if available
+        ckpt = None
+        if checkpoint_path:
+            ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+            if "config" in ckpt:
+                self.cfg = ckpt["config"]
+            else:
+                self.cfg = config if config is not None else SGTransConfig()
+        else:
+            self.cfg = config if config is not None else SGTransConfig()
 
         # Components
         self.facemesh = FaceMeshExtractor()
         self.head_pose = HeadPoseEstimator()
         self.model = SGTransNet(self.cfg).to(self.device)
+        if ckpt is not None:
+            state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
+            self.model.load_state_dict(state_dict, strict=False)
+            print(f"[StreamEngine] Loaded trained checkpoint from '{checkpoint_path}' (classes={self.cfg.num_classes}, T={self.cfg.sequence_length})")
         self.model.eval()
 
         self.buffer = SequenceBuffer(max_len=self.cfg.sequence_length)
@@ -134,7 +148,8 @@ class StreamEngine:
                 outputs = self.model(seq_frames, seq_kin)
                 probs = outputs["probs"][0].cpu().numpy()
                 state_idx = int(np.argmax(probs))
-                driver_state = DRIVER_STATE_NAMES[state_idx]
+                state_names = ["Alert", "Drowsy"] if self.cfg.num_classes == 2 else DRIVER_STATE_NAMES
+                driver_state = state_names[state_idx] if state_idx < len(state_names) else f"State_{state_idx}"
                 confidence = float(probs[state_idx])
                 fatigue_prob = float(outputs["fatigue_prob"][0].cpu().item())
 

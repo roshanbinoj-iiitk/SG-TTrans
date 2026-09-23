@@ -24,11 +24,12 @@ def main():
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device (cuda/cpu)")
     parser.add_argument("--max_frames", type=int, default=300, help="Max frames for headless run (0 for infinite)")
     parser.add_argument("--headless", action="store_true", help="Run without opening GUI window")
+    parser.add_argument("--checkpoint", type=str, default="", help="Path to trained model checkpoint (.pt)")
     args = parser.parse_args()
 
     print(f"Initializing SG-TTrans on device: {args.device}")
     cfg = SGTransConfig(fps=args.fps)
-    engine = StreamEngine(config=cfg, device=args.device)
+    engine = StreamEngine(config=cfg, device=args.device, checkpoint_path=args.checkpoint if args.checkpoint else None)
 
     is_synthetic = (args.source.lower() == "synthetic")
     cap = None

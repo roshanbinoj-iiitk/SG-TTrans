@@ -81,8 +81,11 @@ class SGTransNet(nn.Module):
         logits = self.classifier(z_bar)
         probs = F.softmax(logits, dim=-1)
 
-        # Fatigue probability: Class 1 (Drowsy) + Class 2 (Microsleep)
-        fatigue_prob = probs[:, 1] + probs[:, 2]
+        # Fatigue probability: Class 1 (Drowsy) + Class 2 (Microsleep) if >= 3 classes, else probs[:, 1]
+        if self.config.num_classes >= 3:
+            fatigue_prob = probs[:, 1] + probs[:, 2]
+        else:
+            fatigue_prob = probs[:, 1]
 
         return {
             "logits": logits,
