@@ -1,0 +1,21 @@
+# SG-TTrans: Spatial-Geometric Temporal Transformer Dependencies
+# Python >= 3.10 required (tested with Python 3.12)
+
+# Deep Learning Framework
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Computer Vision & Real-Time Tracking
+opencv-python>=4.8.0
+mediapipe>=0.10.0
+
+# Scientific Computing & Kinematics
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Testing & Verification
+pytest>=7.0.0
+
+# Utilities & Visualization
+tqdm>=4.65.0
+matplotlib>=3.7.0
