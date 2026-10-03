@@ -16,6 +16,7 @@ scipy>=1.10.0
 # Testing & Verification
 pytest>=7.0.0
 
-# Utilities & Visualization
+# Utilities & Visualization & Audio
 tqdm>=4.65.0
 matplotlib>=3.7.0
+sounddevice>=0.4.6

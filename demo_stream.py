@@ -14,6 +14,7 @@ import numpy as np
 import torch
 from sg_ttrans.config import SGTransConfig
 from sg_ttrans.inference.stream_engine import StreamEngine
+from sg_ttrans.alerts.audio_alert import AudioAlertManager
 
 def main():
     parser = argparse.ArgumentParser(description="SG-TTrans Real-Time Driver Drowsiness Demo")
@@ -25,11 +26,14 @@ def main():
     parser.add_argument("--max_frames", type=int, default=0, help="Max frames to process (0 for continuous until closed)")
     parser.add_argument("--headless", action="store_true", help="Run without opening GUI window")
     parser.add_argument("--checkpoint", type=str, default="", help="Path to trained model checkpoint (.pt)")
+    parser.add_argument("--no-audio", action="store_true", help="Disable acoustic alert audio playback")
+    parser.add_argument("--volume", type=float, default=0.6, help="Alert audio volume (0.0 to 1.0, default: 0.6)")
     args = parser.parse_args()
 
     print(f"Initializing SG-TTrans on device: {args.device}")
     cfg = SGTransConfig(fps=args.fps)
     engine = StreamEngine(config=cfg, device=args.device, checkpoint_path=args.checkpoint if args.checkpoint else None)
+    audio_mgr = AudioAlertManager(enabled=not args.no_audio, volume=args.volume)
 
     is_synthetic = (args.source.lower() == "synthetic")
     cap = None
@@ -46,6 +50,7 @@ def main():
     print("   [1] Scenario A: Normal Driving (v=80, TTC=8.0, Alert)")
     print("   [2] Scenario B: Moderate Yawning (v=90, TTC=3.5, Yawn)")
     print("   [3] Scenario C: Critical Micro-sleep (v=110, TTC=1.4 -> 0.9, AEB)")
+    print("   [M] Toggle Audio Alert Mute / Unmute")
     print("   [Q/ESC] Quit Demo (or close display window)")
     print("="*60 + "\n")
 
@@ -85,6 +90,9 @@ def main():
             # Process frame through SG-TTrans
             res, hud_frame = engine.process_frame(frame, velocity=velocity, ttc=ttc)
 
+            # Update audio alert playback (Level 2 & Level 3 trigger real acoustic alarms)
+            audio_mgr.update(res["adas_level"])
+
             # Print console telemetry every 15 frames
             if frame_idx % 15 == 0:
                 elapsed = time.time() - start_time
@@ -93,6 +101,19 @@ def main():
                       f"EAR: {res['ear']:.2f} | MAR: {res['mar']:.2f} | RSI: {res['rsi']:.3f} | ADAS: {res['adas_action']}")
 
             if not args.headless:
+                # Render Audio Status badge in bottom ADAS banner
+                h_hud, w_hud = hud_frame.shape[:2]
+                if args.no_audio:
+                    audio_label = "[AUDIO: OFF]"
+                    audio_col = (130, 130, 130)
+                elif audio_mgr.is_muted:
+                    audio_label = "[AUDIO: MUTED]"
+                    audio_col = (0, 140, 255)
+                else:
+                    audio_label = "[AUDIO: ACTIVE]"
+                    audio_col = (0, 255, 0)
+                cv2.putText(hud_frame, audio_label, (w_hud - 185, h_hud - 22), cv2.FONT_HERSHEY_DUPLEX, 0.55, audio_col, 1)
+
                 cv2.imshow("SG-TTrans ADAS In-Cabin Monitor", hud_frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q') or key == 27:
@@ -112,8 +133,13 @@ def main():
                 elif key == ord('3'):  # Scenario C
                     velocity, ttc = 110.0, 1.4
                     print(">> Triggered Scenario C: Critical Micro-sleep (Level 3 AEB)")
+                elif key == ord('m') or key == ord('M'):
+                    is_muted = audio_mgr.toggle_mute()
+                    status = "MUTED" if is_muted else "ACTIVE"
+                    print(f">> Audio alert {status}")
 
     finally:
+        audio_mgr.stop()
         if cap is not None:
             cap.release()
         cv2.destroyAllWindows()
