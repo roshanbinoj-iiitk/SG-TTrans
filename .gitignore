@@ -5,7 +5,8 @@ __pycache__/
 .superpowers/
 .env
 checkpoints/*.pt
-data
+/data/
 *.task
+
 .agents/
 chat.md
