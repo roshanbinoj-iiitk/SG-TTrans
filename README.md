@@ -1,17 +1,33 @@
-# SG-TTrans: Spatial-Geometric Temporal Transformer for Real-Time Driver Drowsiness Detection and Risk-Aware Autonomous Safety Monitoring
+# ST-HGST: Spatio-Temporal Hypergraph Gaze-Scene Transformer for Cognitive Saliency Alignment & Level-3 Takeover Arbitration
 
 [![PyTorch 2.6](https://img.shields.io/badge/PyTorch-2.6%2Bcu124-EE4C2C.svg?logo=pytorch)](https://pytorch.org/)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg?logo=python)](https://python.org/)
 [![CUDA Accelerated](https://img.shields.io/badge/CUDA-RTX%203050-76B900.svg?logo=nvidia)](https://developer.nvidia.com/cuda-zone)
-[![Tests: 32 Passed](https://img.shields.io/badge/Tests-32%20Passed-brightgreen.svg)]()
+[![Tests: 23 Passed](https://img.shields.io/badge/Tests-23%20Passed-brightgreen.svg)]()
+[![Throughput: 84.1 FPS](https://img.shields.io/badge/Throughput-84.1%20FPS-blue.svg)]()
 
-> **Implementation of the Research Paper:**  
-> *"Spatial-Geometric Temporal Transformer (SG-TTrans) for Real-Time Driver Drowsiness Detection and Risk-Aware Autonomous Safety Monitoring"*  
+> **Novel Research Paradigm (Addressing Euro NCAP 2026 "Driver State Link"):**  
+> *"Cognitive Saliency Alignment and Causal Risk Grounding in SAE Level-3 Autonomous Vehicle Takeovers"*  
 > **Authors:** Roshan Binoj, Mohammed Sirajudheen, Hafiz Feroze Vellukuzhi, Vishwanath Darur (Indian Institute of Information Technology, Kottayam)
 
 ---
 
+## 0. Novelty & The Unexplored Research Gap in Autonomous Vehicles
+
+Traditional Driver Monitoring Systems (DMS) suffer from **Decoupled Cognitive Blindness**: they monitor fatigue in isolation (blinks, EAR, MAR) without knowing what external hazards exist, or check head pose without knowing if the driver has registered the specific causal danger.
+
+**ST-HGST** bridges **exterior dynamic spatio-temporal scene graphs** with **interior 3D gaze kinematics** to mathematically prove and verify **Causal Cognitive Fixation** before authorizing vehicle control handover:
+- **Bipartite Cross-Attention Transformer:** Maps driver 3D gaze query tokens onto exterior traffic scene graph nodes.
+- **Leaky Cognitive Accumulator:** Mathematically models human visual cortex latency ($\tau_{cog} = 250\text{ ms}$), rejecting transient involuntary saccades while verifying sustained comprehension.
+- **Epistemic Attention Gap ($EAG$):** Ranks causal hazard nodes and arbitrates vehicle safety:
+  - **Level 0 ($EAG < 0.20$):** Safe Torque Handover Authorized.
+  - **Level 1 ($0.20 \le EAG < 0.65$):** Targeted Spatial HUD Cueing on neglected hazard node.
+  - **Level 2 ($EAG \ge 0.65$ or $TTC < 1.2\text{ s}$):** Autonomous Minimum Risk Maneuver (MRM / AEB).
+
+---
+
 ## 1. Key Innovations & Architecture
+
 
 Existing computer vision systems treat drowsiness as an isolated, static image classification task or recurrent network, making them vulnerable to cabin illumination shifts, facial occlusions, and frequent false alarms from transient voluntary blinks.
 
@@ -114,18 +130,24 @@ Profile per-component latency and FPS throughput on GPU:
 python benchmark.py
 ```
 
-### Run Live Interactive HUD Demo
-Run the real-time stream monitor:
+### Run Interactive ST-HGST Level-3 Takeover HUD Demo
+Run the live dual-stream inside-outside cognitive takeover monitor:
+```bash
+python demo_dual_stream.py
+```
+
+**Interactive Controls in GUI:**
+- `[1]`: Trigger **Scenario A** (Aligned Attention $\to EAG < 0.20 \to$ Level 0 Safe Handover)
+- `[2]`: Trigger **Scenario B** (Inattentional Blindness $\to 0.20 \le EAG < 0.65 \to$ Level 1 Spatial HUD Cue)
+- `[3]`: Trigger **Scenario C** (Critical Distraction / Sleep $\to EAG \ge 0.65 \to$ Level 2 Autonomous MRM)
+- `[Q]`: Exit demonstration.
+
+### Run Legacy Driver Drowsiness HUD Demo (SG-TTrans)
 ```bash
 # Synthetic camera mode with HUD:
 python demo_stream.py --source synthetic
-
-# Real USB Webcam 0:
-python demo_stream.py --source 0
-
-# Video file:
-python demo_stream.py --source path/to/driver_video.mp4
 ```
+
 
 **Interactive Keyboard Controls in GUI:**
 - `[1]`: Trigger **Scenario A** (Normal Blink: $RSI = 0.071 \to \text{Level 0}$)
