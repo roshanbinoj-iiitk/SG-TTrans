@@ -41,3 +41,32 @@ class SGTransConfig:
     delta1: float = 0.35            # Level 1: Visual Warning Prompt + Gentle Chime
     delta2: float = 0.60            # Level 2: Audio-Haptic Alert
     delta3: float = 0.80            # Level 3: Emergency Braking + Lane Centering Active Hold
+
+
+@dataclass
+class STHGSTConfig:
+    """Configuration dataclass for Spatio-Temporal Hypergraph Gaze-Scene Transformer."""
+    # Temporal & Kinematics
+    fps: float = 30.0
+    delta_t: float = 1.0 / 30.0
+    tau_crit: float = 2.5                    # Critical TTC reaction threshold (seconds)
+    lambda_scale: float = 0.5                # Sigmoid scaling factor for hazard scoring
+    ttc_imminent_threshold: float = 1.2      # TTC below which emergency MRM is forced
+    
+    # Cognitive Latency Parameters
+    tau_cog: float = 0.25                    # Cognitive comprehension time constant (seconds)
+    theta_comp: float = 0.60                 # Accumulation threshold for Comprehended state
+    theta_sacc: float = 0.20                 # Accumulation threshold for Saccade state
+    
+    # Takeover Arbitration Thresholds
+    eag_handover_thresh: float = 0.20        # EAG below which handover is safe
+    eag_cue_thresh: float = 0.65             # EAG above which MRM is mandated
+    cue_hold_duration_sec: float = 1.5       # Hold duration for spatial HUD cue
+    
+    # Model Hyperparameters
+    embed_dim: int = 128
+    num_heads: int = 4
+    num_layers: int = 2
+    dropout: float = 0.1
+    max_nodes: int = 30
+
