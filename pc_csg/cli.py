@@ -14,20 +14,20 @@ import sys
 
 def main_demo():
     """Launch interactive counterfactual HUD simulation."""
-    import demo_pc_csg
-    demo_pc_csg.main()
+    from pc_csg.inference.demo_engine import main as demo_main
+    demo_main()
 
 
 def main_video():
     """Run real video / dashcam inference pipeline."""
-    import run_real_video
-    run_real_video.main()
+    from pc_csg.inference.real_video_engine import main as video_main
+    video_main()
 
 
 def main_bench():
     """Run hardware latency and throughput benchmark."""
-    import benchmark_pccsg
-    benchmark_pccsg.main()
+    from pc_csg.benchmark import main as bench_main
+    bench_main()
 
 
 def main_web():
@@ -57,13 +57,17 @@ def main():
 
     # Video subcommand
     video_parser = subparsers.add_parser("video", help="Run real-world dashcam video inference")
+    video_parser.add_argument("video_pos", nargs="?", default=None, help="Path to video file (optional positional)")
     video_parser.add_argument("--video", type=str, default=None, help="Path to video file")
     video_parser.add_argument("--webcam", type=int, default=None, help="Webcam device index (0, 1)")
     video_parser.add_argument("--save-video", type=str, default=None, help="Export annotated video path")
+    video_parser.add_argument("--checkpoint", type=str, default="checkpoints/pc_csg_real_best.pt", help="Path to PC-CSG checkpoint")
+    video_parser.add_argument("--max-frames", type=int, default=None, help="Max frames to process")
     video_parser.add_argument("--headless", action="store_true", help="Run in headless mode")
 
     # Benchmark subcommand
-    subparsers.add_parser("bench", help="Run latency and FPS hardware benchmarks")
+    bench_parser = subparsers.add_parser("bench", help="Run latency and FPS hardware benchmarks")
+    bench_parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"], help="Compute device")
 
     # Web dashboard subcommand
     web_parser = subparsers.add_parser("web", help="Launch interactive browser dashboard (Gradio)")
@@ -73,27 +77,26 @@ def main():
     args, unknown = parser.parse_known_args()
 
     if args.command == "demo":
-        sys.argv = [sys.argv[0]] + unknown
-        if args.headless:
-            sys.argv.append("--headless")
-        if args.save_images:
-            sys.argv.append("--save-images")
-        if args.save_video:
-            sys.argv.append("--save-video")
-        main_demo()
+        from pc_csg.inference.demo_engine import run_demo
+        run_demo(
+            save_images=args.save_images,
+            save_video=args.save_video,
+            headless=args.headless,
+        )
     elif args.command == "video":
-        sys.argv = [sys.argv[0]] + unknown
-        if args.video:
-            sys.argv.extend(["--video", args.video])
-        if args.webcam is not None:
-            sys.argv.extend(["--webcam", str(args.webcam)])
-        if args.save_video:
-            sys.argv.extend(["--save-video", args.save_video])
-        if args.headless:
-            sys.argv.append("--headless")
-        main_video()
+        from pc_csg.inference.real_video_engine import run_video_pipeline
+        target_video = args.video or args.video_pos
+        run_video_pipeline(
+            video_path=target_video,
+            webcam=args.webcam,
+            save_video=args.save_video,
+            checkpoint=args.checkpoint,
+            max_frames=args.max_frames,
+            headless=args.headless,
+        )
     elif args.command == "bench":
-        main_bench()
+        from pc_csg.benchmark import run_benchmark
+        run_benchmark(device_str=args.device)
     elif args.command == "web":
         main_web()
     else:

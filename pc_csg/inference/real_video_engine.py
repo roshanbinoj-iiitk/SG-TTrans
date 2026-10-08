@@ -498,3 +498,111 @@ class RealVideoInferenceEngine:
         print(f"Processed {frame_idx} frames in {elapsed:.1f}s ({frame_idx / max(0.1, elapsed):.1f} FPS).")
         if output_video_path:
             print(f"Annotated real video saved to: {output_video_path}")
+
+
+def find_default_video() -> str:
+    """Find the best available real road video on the system."""
+    import glob
+
+    # 1. Check current directory for video files
+    local_vids = glob.glob("*.mp4") + glob.glob("*.webm")
+    for v in local_vids:
+        if os.path.exists(v):
+            return v
+
+    # 2. Check standard paths in Downloads
+    user_downloads = os.path.expanduser("~/Downloads")
+    default_candidates = [
+        os.path.join(user_downloads, "Driver Drowsiness Dataset (DDD)", "road_dashcam_real.mp4"),
+        os.path.join(user_downloads, "Driver Drowsiness Dataset (DDD)", "car_detection.mp4"),
+        os.path.join(user_downloads, "Driver Drowsiness Dataset (DDD)", "road_traffic_video.webm"),
+        os.path.join(user_downloads, "Driver Drowsiness Dataset (DDD)", "road_bridge_traffic.webm"),
+        os.path.join(user_downloads, "Driver Drowsiness Dataset (DDD)", "road_dashcam_daylight.ogv"),
+        os.path.join(user_downloads, "Driver Drowsiness Dataset (DDD)", "road_urban_traffic.ogv"),
+    ]
+    for vp in default_candidates:
+        if os.path.exists(vp):
+            return vp
+
+    # 3. Check demo_outputs
+    demo_vids = glob.glob("demo_outputs/*.mp4")
+    if demo_vids:
+        return demo_vids[0]
+
+    # 4. Search recursively in Downloads
+    vids = glob.glob(os.path.join(user_downloads, "**/*.mp4"), recursive=True)
+    if vids:
+        return vids[0]
+
+    return "0"
+
+
+def run_video_pipeline(
+    video_path: Optional[str] = None,
+    webcam: Optional[int] = None,
+    save_video: Optional[str] = None,
+    checkpoint: str = "checkpoints/pc_csg_real_best.pt",
+    max_frames: Optional[int] = None,
+    headless: bool = False,
+):
+    """Run real-world video anomaly anticipation pipeline."""
+    if webcam is not None:
+        input_source = str(webcam)
+        print(f"Using live webcam device #{webcam}")
+    elif video_path:
+        input_source = video_path
+    else:
+        input_source = find_default_video()
+        print(f"Auto-selected driving video: {input_source}")
+
+    if not input_source.isdigit() and not os.path.exists(input_source):
+        print(f"Error: Input video does not exist: {input_source}")
+        sys.exit(1)
+
+    print("=" * 68)
+    print(" PC-CSG Real-World Video Anomaly Anticipation Engine")
+    print("=" * 68)
+    print(f" Input:      {input_source}")
+    print(f" Checkpoint: {checkpoint}")
+    print(f" Output:     {save_video or 'Display Only'}")
+    print(f" Display:    {'Disabled (Headless)' if headless else 'Interactive GUI'}")
+    print("=" * 68)
+
+    engine = RealVideoInferenceEngine(checkpoint_path=checkpoint)
+    engine.process_video(
+        input_video_path=input_source,
+        output_video_path=save_video,
+        display=not headless,
+        max_frames=max_frames,
+    )
+
+
+def main():
+    """CLI entry point for video inference."""
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(description="PC-CSG Real Video Anomaly Anticipation Inference")
+    parser.add_argument("video_pos", nargs="?", default=None, help="Path to input video file (optional positional)")
+    parser.add_argument("--video", type=str, default=None, help="Path to input video file (mp4, webm, ogv)")
+    parser.add_argument("--webcam", type=int, default=None, help="Webcam device index (e.g., 0)")
+    parser.add_argument("--save-video", type=str, default=None, help="Path to save annotated output video")
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/pc_csg_real_best.pt", help="Path to trained PC-CSG checkpoint")
+    parser.add_argument("--max-frames", type=int, default=None, help="Max frames to process")
+    parser.add_argument("--headless", action="store_true", help="Run without opening GUI display window")
+    args = parser.parse_args()
+
+    target_video = args.video or args.video_pos
+    run_video_pipeline(
+        video_path=target_video,
+        webcam=args.webcam,
+        save_video=args.save_video,
+        checkpoint=args.checkpoint,
+        max_frames=args.max_frames,
+        headless=args.headless,
+    )
+
+
+if __name__ == "__main__":
+    main()
+
