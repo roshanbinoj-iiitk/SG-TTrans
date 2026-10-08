@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you find PC-CSG useful in your research or autonomous vehicle systems, please cite it as below."
+authors:
+  - family-names: "Binoj"
+    given-names: "Roshan"
+    affiliation: "Indian Institute of Information Technology, Kottayam"
+    email: "roshan23bcs9@iiitkottayam.ac.in"
+  - family-names: "Sirajudheen"
+    given-names: "Mohammed"
+    affiliation: "Indian Institute of Information Technology, Kottayam"
+    email: "mohamme23bcs132@iiitkottayam.ac.in"
+  - family-names: "Vellukuzhi"
+    given-names: "Hafiz Feroze"
+    affiliation: "Indian Institute of Information Technology, Kottayam"
+    email: "hafiz23bcs6@iiitkottayam.ac.in"
+  - family-names: "Darur"
+    given-names: "Vishwanath"
+    affiliation: "Indian Institute of Information Technology, Kottayam"
+    email: "vishwan23bcs57@iiitkottayam.ac.in"
+title: "PC-CSG: Physics-Constrained Counterfactual Scene Graph Transformer for Real-Time Autonomous Anomaly Anticipation"
+version: 0.1.0
+date-released: 2026-10-08
+url: "https://github.com/roshanbinoj-iiitk/SG-TTrans"
+keywords:
+  - autonomous driving
+  - counterfactual reasoning
+  - physics-informed neural networks
+  - scene graph transformer
+  - anomaly anticipation
+  - edge computing
