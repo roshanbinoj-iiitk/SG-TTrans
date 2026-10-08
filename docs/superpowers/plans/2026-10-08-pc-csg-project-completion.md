@@ -41,7 +41,7 @@
 - Consumes: `pc_csg.inference.demo_engine.run_demo`, `pc_csg.inference.real_video_engine.run_video_pipeline`
 - Produces: CLI commands `pc-csg`, `pc-csg-demo`, `pc-csg-video`, `pc-csg-bench`, `pc-csg-web`
 
-- [ ] **Step 1: Write the failing CLI test**
+- [x] **Step 1: Write the failing CLI test**
 
 ```python
 # tests/test_cli.py
@@ -61,12 +61,12 @@ def test_cli_help():
     assert "bench" in result.stdout
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `/home/roshanbinoj/Documents/BTP/venv/bin/pytest tests/test_cli.py -v`  
 Expected: FAIL (`No module named pc_csg.cli`)
 
-- [ ] **Step 3: Restructure directories and archive legacy files**
+- [x] **Step 3: Restructure directories and archive legacy files**
 
 Move loose zips and previous project files:
 - Move `Driver Drowsiness Detection (1).pdf`, `demo_dual_stream.py`, `demo_stream.py`, `benchmark.py` to `archive/legacy_sg_ttrans/`.
@@ -74,7 +74,7 @@ Move loose zips and previous project files:
 - Remove broken `data` symlink (`rm data`).
 - Ensure `assets/` and `scripts/` directories exist.
 
-- [ ] **Step 4: Implement `pc_csg/cli.py` and update `pyproject.toml`**
+- [x] **Step 4: Implement `pc_csg/cli.py` and update `pyproject.toml`**
 
 Create `pc_csg/cli.py` with argument parser supporting:
 - `demo`: calls `demo_pc_csg.main()`
@@ -86,12 +86,12 @@ Update `pyproject.toml` with `[project.scripts]` and `[project.optional-dependen
 Install editable package:
 `/home/roshanbinoj/Documents/BTP/venv/bin/pip install -e .`
 
-- [ ] **Step 5: Run tests and verify CLI passes**
+- [x] **Step 5: Run tests and verify CLI passes**
 
 Run: `/home/roshanbinoj/Documents/BTP/venv/bin/pytest tests/test_cli.py tests/test_pc_csg.py -v`  
 Expected: PASS (all 38 tests pass).
 
-- [ ] **Step 6: Commit Task 1**
+- [x] **Step 6: Commit Task 1**
 
 ```bash
 git add archive/ assets/ scripts/ pc_csg/cli.py pyproject.toml tests/test_cli.py
@@ -111,7 +111,7 @@ git commit -m "feat(cli): restructure repository hygiene and add unified pc-csg 
 - Consumes: `pc_csg.models.csga.CounterfactualSGATransformer`, `pc_csg.models.pikv.PhysicsInformedKinematicValidator`, `pc_csg.risk_engine.crt_arbiter.CounterfactualRiskArbiter`
 - Produces: Formatted Table 1 (Latency Breakdown), Table 2 (PIKV Pruning & Hazard Reduction), and Proposition 1 & 2 validation summary.
 
-- [ ] **Step 1: Write the failing reproduction test**
+- [x] **Step 1: Write the failing reproduction test**
 
 ```python
 # tests/test_reproduction.py
@@ -131,12 +131,12 @@ def test_reproduce_script_runs():
     assert "PROPOSITION 2" in result.stdout
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `/home/roshanbinoj/Documents/BTP/venv/bin/pytest tests/test_reproduction.py -v`  
 Expected: FAIL (`No such file or directory: 'scripts/reproduce_paper_results.py'`)
 
-- [ ] **Step 3: Implement `scripts/reproduce_paper_results.py` and `CITATION.cff`**
+- [x] **Step 3: Implement `scripts/reproduce_paper_results.py` and `CITATION.cff`**
 
 Implement `scripts/reproduce_paper_results.py`:
 - Benchmark pipeline components on synthetic scene graph batches.
@@ -149,12 +149,12 @@ Create `CITATION.cff` with:
 - Authors: Roshan Binoj, Mohammed Sirajudheen, Hafiz Feroze Vellukuzhi, Vishwanath Darur
 - Affiliation: Indian Institute of Information Technology, Kottayam
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `/home/roshanbinoj/Documents/BTP/venv/bin/pytest tests/test_reproduction.py -v`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 ```bash
 git add scripts/reproduce_paper_results.py CITATION.cff tests/test_reproduction.py
@@ -177,7 +177,7 @@ git commit -m "feat(academic): add paper results reproduction suite and CITATION
 - Consumes: `demo_outputs/pc_csg_demo.mp4`, `demo_outputs/real_dashcam_annotated.mp4`, `demo_outputs/scenario_*.png`
 - Produces: Web-optimized animated GIFs and diagrams in `assets/`.
 
-- [ ] **Step 1: Write export script `scripts/export_visual_assets.py`**
+- [x] **Step 1: Write export script `scripts/export_visual_assets.py`**
 
 Script:
 - Reads `demo_outputs/pc_csg_demo.mp4`, extracts 60 frames (at 15 fps, 4 seconds), downscales to $720\times 405$, optimizes palette with PIL/imageio, and saves `assets/demo_hud_preview.gif`.
@@ -185,7 +185,7 @@ Script:
 - Combines `demo_outputs/scenario_A_nominal.png`, `scenario_B_advisory.png`, `scenario_C_alert.png`, `scenario_D_critical.png` into a unified $2\times 2$ grid with headers into `assets/scenarios_grid.png`.
 - Creates a clean, modern vector/matplotlib infographic of the PC-CSG architecture pipeline and saves `assets/architecture_flow.png`.
 
-- [ ] **Step 2: Run export script to generate all assets**
+- [x] **Step 2: Run export script to generate all assets**
 
 Run: `/home/roshanbinoj/Documents/BTP/venv/bin/python scripts/export_visual_assets.py`  
 Verify:
@@ -194,7 +194,7 @@ Verify:
 - `assets/scenarios_grid.png` exists and renders clearly.
 - `assets/architecture_flow.png` exists.
 
-- [ ] **Step 3: Commit Task 3**
+- [x] **Step 3: Commit Task 3**
 
 ```bash
 git add scripts/export_visual_assets.py assets/
@@ -214,7 +214,7 @@ git commit -m "feat(assets): generate animated preview GIFs, scenario grid, and 
 - Consumes: `pc_csg.models.pikv.PhysicsInformedKinematicValidator`, `pc_csg.risk_engine.crt_arbiter.CounterfactualRiskArbiter`, `pc_csg.inference.real_video_engine.RealVideoEngine`
 - Produces: Gradio Blocks Web Application launching on `http://127.0.0.1:7860`.
 
-- [ ] **Step 1: Write failing web app tests**
+- [x] **Step 1: Write failing web app tests**
 
 ```python
 # tests/test_web.py
@@ -238,12 +238,12 @@ def test_build_demo():
     assert demo is not None
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `/home/roshanbinoj/Documents/BTP/venv/bin/pytest tests/test_web.py -v`  
 Expected: FAIL (`No module named pc_csg.web`)
 
-- [ ] **Step 3: Implement `pc_csg/web/app.py`**
+- [x] **Step 3: Implement `pc_csg/web/app.py`**
 
 Features:
 - **Tab 1:** "What-If" Counterfactual Simulation Sandbox.
@@ -256,12 +256,12 @@ Features:
 - **Tab 3:** Paper & Latency Benchmark.
   - Displays hardware benchmark table and Proposition 1 & 2 summaries.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `/home/roshanbinoj/Documents/BTP/venv/bin/pytest tests/test_web.py -v`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 4**
+- [x] **Step 5: Commit Task 4**
 
 ```bash
 git add pc_csg/web/ tests/test_web.py
@@ -280,7 +280,7 @@ git commit -m "feat(web): add interactive Gradio counterfactual simulation dashb
 - Consumes: `pyproject.toml`, `tests/`
 - Produces: GitHub CI test automation across Python 3.10 and 3.11.
 
-- [ ] **Step 1: Create `.github/workflows/ci.yml`**
+- [x] **Step 1: Create `.github/workflows/ci.yml`**
 
 Workflow specification:
 - Name: `PC-CSG CI`
@@ -294,11 +294,11 @@ Workflow specification:
   4. Run Pytest: `pytest tests/ -v`.
   5. Run CLI check: `pc-csg --help`.
 
-- [ ] **Step 2: Validate CI workflow configuration**
+- [x] **Step 2: Validate CI workflow configuration**
 
 Ensure YAML syntax is valid and linted.
 
-- [ ] **Step 3: Commit Task 5**
+- [x] **Step 3: Commit Task 5**
 
 ```bash
 git add .github/workflows/ci.yml
@@ -313,7 +313,7 @@ git commit -m "ci: add GitHub Actions workflow for automated testing"
 - Modify: `README.md`
 - Test: Full end-to-end verification (tests, reproduction script, web app, CLI).
 
-- [ ] **Step 1: Rewrite `README.md`**
+- [x] **Step 1: Rewrite `README.md`**
 
 Incorporate:
 1. **Badges:** Python 3.10+, PyTorch 2.x, CI Passing, 152.6 FPS Edge Latency, Preemptive Lead Time 2.5s, Elsevier Manuscript Available.
@@ -325,13 +325,13 @@ Incorporate:
 7. **Mathematical Guarantees:** Proposition 1 & Proposition 2 summary.
 8. **BibTeX Citation:** Standard Elsevier citation block matching `Sample_Template/elsarticle-template.tex`.
 
-- [ ] **Step 2: Run complete test suite and verification**
+- [x] **Step 2: Run complete test suite and verification**
 
 Run:
 - `/home/roshanbinoj/Documents/BTP/venv/bin/pytest tests/ -v` (verify all unit & CLI tests pass)
 - `/home/roshanbinoj/Documents/BTP/venv/bin/python scripts/reproduce_paper_results.py` (verify academic benchmark)
 
-- [ ] **Step 3: Commit Task 6**
+- [x] **Step 3: Commit Task 6**
 
 ```bash
 git add README.md
