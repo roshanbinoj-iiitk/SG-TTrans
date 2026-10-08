@@ -3,11 +3,14 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sg_ttrans"
+name = "pc_csg"
 version = "0.1.0"
-description = "Spatial-Geometric Temporal Transformer for Real-Time Driver Drowsiness Detection and Risk-Aware ADAS"
+description = "PC-CSG: Physics-Constrained Counterfactual Scene Graph Transformer for Real-Time Autonomous Anomaly Anticipation"
 authors = [
     { name = "Roshan Binoj" },
+    { name = "Mohammed Sirajudheen" },
+    { name = "Hafiz Feroze Vellukuzhi" },
+    { name = "Vishwanath Darur" },
 ]
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,7 +18,6 @@ dependencies = [
     "torch>=2.0.0",
     "torchvision>=0.15.0",
     "opencv-python>=4.8.0",
-    "mediapipe>=0.10.0",
     "numpy>=1.24.0",
     "scipy>=1.10.0",
 ]

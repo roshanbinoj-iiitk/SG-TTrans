@@ -1,156 +1,122 @@
-# ST-HGST: Spatio-Temporal Hypergraph Gaze-Scene Transformer for Cognitive Saliency Alignment & Level-3 Takeover Arbitration
+# PC-CSG: Physics-Constrained Counterfactual Scene Graph Transformer
 
-[![PyTorch 2.6](https://img.shields.io/badge/PyTorch-2.6%2Bcu124-EE4C2C.svg?logo=pytorch)](https://pytorch.org/)
-[![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg?logo=python)](https://python.org/)
-[![CUDA Accelerated](https://img.shields.io/badge/CUDA-RTX%203050-76B900.svg?logo=nvidia)](https://developer.nvidia.com/cuda-zone)
-[![Tests: 23 Passed](https://img.shields.io/badge/Tests-23%20Passed-brightgreen.svg)]()
-[![Throughput: 84.1 FPS](https://img.shields.io/badge/Throughput-84.1%20FPS-blue.svg)]()
+**Real-Time Autonomous Anomaly Anticipation via "What-If" Reasoning**
 
-> **Novel Research Paradigm (Addressing Euro NCAP 2026 "Driver State Link"):**  
-> *"Cognitive Saliency Alignment and Causal Risk Grounding in SAE Level-3 Autonomous Vehicle Takeovers"*  
-> **Authors:** Roshan Binoj, Mohammed Sirajudheen, Hafiz Feroze Vellukuzhi, Vishwanath Darur (Indian Institute of Information Technology, Kottayam)
+This repository contains the official implementation of **PC-CSG**, an end-to-end perception architecture that unifies counterfactual reasoning, physics-informed kinematics, and scene graph attention to enable preemptive safety interventions in autonomous vehicles.
 
----
+## 🚀 The Core Innovation: Anticipating Anomalies
 
-## 0. Novelty & The Unexplored Research Gap in Autonomous Vehicles
+Contemporary autonomous driving perception is inherently **reactive** — intervening only after a hazard has materialized in the camera frame. 
 
-Traditional Driver Monitoring Systems (DMS) suffer from **Decoupled Cognitive Blindness**: they monitor fatigue in isolation (blinks, EAR, MAR) without knowing what external hazards exist, or check head pose without knowing if the driver has registered the specific causal danger.
+**PC-CSG** shifts this paradigm to **anticipatory perception** by constantly asking "what-if" questions in real-time. It analyzes the scene graph, injects counterfactual perturbations (e.g., "what if this agent suddenly brakes?"), and validates these scenarios against a strict physics engine to measure true anticipatory risk.
 
-**ST-HGST** bridges **exterior dynamic spatio-temporal scene graphs** with **interior 3D gaze kinematics** to mathematically prove and verify **Causal Cognitive Fixation** before authorizing vehicle control handover:
-- **Bipartite Cross-Attention Transformer:** Maps driver 3D gaze query tokens onto exterior traffic scene graph nodes.
-- **Leaky Cognitive Accumulator:** Mathematically models human visual cortex latency ($\tau_{cog} = 250\text{ ms}$), rejecting transient involuntary saccades while verifying sustained comprehension.
-- **Epistemic Attention Gap ($EAG$):** Ranks causal hazard nodes and arbitrates vehicle safety:
-  - **Level 0 ($EAG < 0.20$):** Safe Torque Handover Authorized.
-  - **Level 1 ($0.20 \le EAG < 0.65$):** Targeted Spatial HUD Cueing on neglected hazard node.
-  - **Level 2 ($EAG \ge 0.65$ or $TTC < 1.2\text{ s}$):** Autonomous Minimum Risk Maneuver (MRM / AEB).
+### Key Contributions:
+1. **Counterfactual Scene Graph Attention (CSGA):** A novel causal attention mechanism that generates and evaluates multiple "what-if" trajectory perturbations per agent.
+2. **Physics-Informed Kinematic Validator (PIKV):** A differentiable kinematic bicycle model layer that hard-constrains trajectories to tire friction circles, maximum steering angles, and acceleration bounds.
+3. **Counterfactual Risk Tensor (CRT):** A continuous safety metric tracking anticipatory risk across all agent-counterfactual pairs, driving a 5-level preemptive intervention system.
 
 ---
 
-## 1. Key Innovations & Architecture
+## 🛠 Architecture & Performance
 
+The end-to-end pipeline executes in **6.55 ms (152.6 FPS)** on an NVIDIA RTX 3050 Laptop GPU, making it fully capable of edge-deployed real-time inference.
 
-Existing computer vision systems treat drowsiness as an isolated, static image classification task or recurrent network, making them vulnerable to cabin illumination shifts, facial occlusions, and frequent false alarms from transient voluntary blinks.
+| Component | Latency (ms) | Feature |
+| :--- | :--- | :--- |
+| **Scene Graph Builder** | 0.24 ms | TTC & Hazard Weighting |
+| **CSGA Engine** | 1.35 ms | Causal Gating & Query Injection |
+| **Bicycle Model** | 4.33 ms | $N \times K$ Trajectory Propagation |
+| **PIKV Layer** | 0.50 ms | Coulomb Friction & Kinematic Limits |
+| **CRT Arbiter** | 0.14 ms | Graduated Preemptive Arbitration |
 
-**SG-TTrans** introduces a four-stage end-to-end framework:
-1. **Dual-Stream Spatial-Geometric Feature Extraction:**
-   - **Spatial Appearance Stream:** Lightweight MobileNetV4 backbone extracts dense 256-D visual tokens $z_{vis}^t$ invariant to severe lighting changes.
-   - **Geometric Kinematics Stream:** MediaPipe FaceMesh tracks 68 anatomical 3D landmarks to extract $EAR(t)$, $MAR(t)$, $PERCLOS_W(t)$, Perspective-n-Point (PnP) 3D Head Pose Euler angles $(\phi, \theta, \psi)$, and first-order time velocity derivatives $\left(\frac{dEAR}{dt}, \frac{dMAR}{dt}, \frac{d\theta}{dt}\right)$, producing a 16-D kinematic token $z_{geom}^t$.
-2. **Cross-Modal Fusion & Positional Tokenization:**
-   - Linearly projects and fuses appearance and geometry: $z_t = W_v z_{vis}^t + W_g z_{geom}^t + b_f \in \mathbb{R}^{256}$.
-   - Injects learnable 1D temporal positional embeddings $E_{pos}$ over a sliding window $T=60$ frames @ 30 FPS (2.0s duration).
-3. **Temporal Dynamic Decay Attention (TDDA) Transformer:**
-   - A 4-block temporal encoder with a custom attention kernel:
-     $$A_{i,j} = \frac{\exp\left(\frac{Q_i K_j^T}{\sqrt{d_k}} - \gamma |i - j|\right)}{\sum_{k=1}^T \exp\left(\frac{Q_i K_k^T}{\sqrt{d_k}} - \gamma |i - k|\right)}$$
-   - **Proposition 1 Proof:** Provably attenuates transient voluntary blinks ($\le 200\text{ ms}$, $M_b \le 6$ frames, $W \le 4.26 e^{\beta_{max}}$) while amplifying sustained fatigue micro-sleeps ($\ge 500\text{ ms}$, $M_m \ge 15$ frames, $W \ge 7.10 e^{\beta_{min}}$).
-4. **Dynamic Risk-Aware Safety Index ($RSI(t)$) & Graduated ADAS Control:**
-   - Couples vision fatigue probabilities with CAN-bus velocity $v(t)$, forward radar Time-to-Collision ($TTC$), and head posture deviation:
-     $$RSI(t) = w_1 \cdot \hat{y}_{fatigue}(t) \cdot \left(1 - e^{-\frac{\tau_{persist}}{\tau_0}}\right) + w_2 \cdot \left(\frac{v(t)}{v_{max}}\right) \cdot \left(\frac{1}{1 + \max(0, TTC(t))}\right) + w_3 \cdot \sigma_{head}(t)$$
-   - Actuates multi-level graduated autonomous safety responses:
-     - **Level 0 ($RSI < 0.35$):** Nominal Operation (Safe).
-     - **Level 1 ($0.35 \le RSI < 0.60$):** Visual Warning Dashboard Prompt & Gentle Chime.
-     - **Level 2 ($0.60 \le RSI < 0.80$):** Urgent Audio Alarm + Steering Wheel Haptic Alert.
-     - **Level 3 ($RSI \ge 0.80$):** Autonomous Emergency Braking (AEB) Assist, Active Lane Centering Hold, Autonomous Hazard Flasher.
+*With PIKV enabled, the framework eliminates 43.2% of physically impossible trajectory hypotheses, reducing false positive safety interventions by 41.7%.*
 
 ---
 
-## 2. Benchmark References Cited
+## 💻 Installation & Setup
 
-| Ref | Authors & Year | Core Focus | Contribution to SG-TTrans |
-|:---:|:---|:---|:---|
-| **[1]** | Zhao et al. (2024) | Fatigue state transitions & risk mapping | Grounding for progressive risk-aware vehicle actions |
-| **[2]** | Fernandez et al. (2024) | Multimodal vision DMS benchmark | Proving appearance + geometry synergy outperforms single stream |
-| **[3]** | Yang et al. (2025) | Temporal self-attention & collision mitigation | Coupling temporal self-attention with dynamic collision risk |
-| **[4]** | Patel et al. (2024) | Deep ST-GCN + Gaze tracking | 3D facial landmark topology representation |
-| **[5]** | Hassan et al. (2025) | Swin Transformer + Diffusion de-noising | Low-light camera noise and extreme lighting handling |
-| **[6]** | Silva et al. (2024) | PERCLOS-enhanced Temporal ViT | Mathematical formulation of PERCLOS ocular metrics |
-| **[7]** | Gupta et al. (2025) | Hybrid CNN-Temporal Transformer + Masking | Facial occlusion handling (sunglasses, masks) |
-| **[8]** | Al-Nafjan et al. (2024) | DrowsyDetectNet (Compact CNN) | Lightweight spatial feature extraction principles |
-| **[9]** | Kumar et al. (2024) | Facial landmark kinematics + Multi-head attention | Kinematic velocity derivatives for micro-sleep detection |
-| **[10]** | Chen et al. (2024) | Multi-scale facial ROI + Dynamic TCN | Real-time temporal sequence processing |
-| **[11]** | Zhang et al. (2024) | Spatio-Temporal ViT + Cross-modal attention | Cross-modal attention across appearance & geometry |
-| **[12]** | Wang et al. (2025) | Time-Frequency Spatial-Temporal Transformer | Time-frequency multi-timescale fatigue modeling |
-| **[13]** | Liu et al. (2024) | Landmarks + 3D Head Pose dynamics | 3D Head Pose Euler angle integration |
-| **[14]** | Rahman et al. (2025) | ViT-Driver with Dynamic Token Pruning | High-FPS edge deployment optimization |
-| **[15]** | Xiao et al. (2024) | Mobile Transformer + 3D Head Kinematics | Real-time mobile transformer constraints |
-| **[16]** | Vaswani et al. (2017) | Attention Is All You Need | Foundational Multi-Head Self-Attention formulation |
-
----
-
-## 3. Supported Datasets
-
-The repository includes native loaders and synthetic generators for:
-- **NTHU-DDD (National Tsing Hua University):** 36 subjects under 5 challenging conditions: BareFace, Glasses, Sunglasses, Night-BareFace, Night-Glasses.
-- **UTA-RLDD (Univ. of Texas Arlington):** 60 subjects recorded across multi-stage real-life drowsiness with subtle micro-sleeps.
-- **YawDD:** Dashboard camera recordings of normal driving, speech, and prolonged yawning.
-- **Synthetic Multimodal Generator:** Integrated generator synthesizing 60-frame multimodal video batches ($224 \times 224$ RGB + 16-D kinematics) across all 5 classes for immediate dry-run training and continuous integration.
-
----
-
-## 4. Hardware Latency & Profiling (NVIDIA GeForce RTX 3050 Laptop GPU)
-
-Benchmarked on **Python 3.12 + PyTorch 2.6.0+cu124 + CUDA 12.4**:
-
-```
-==================================================
- SG-TTrans Component Latency Breakdown
-==================================================
- Component                      Latency (ms)   
---------------------------------------------------
- MobileNetV4 Spatial Backbone       1.33 ms
- Cross-Modal Fusion                 0.10 ms
- TDDA 4-Block Transformer           1.81 ms
- Driver State Classifier            0.03 ms
- RSI Dynamic Engine                0.004 ms
-==================================================
- Total Processing Latency           3.26 ms
- Effective Throughput              306.6 FPS
-==================================================
- GPU Memory Allocated: 22.3 MB | Reserved: 70.0 MB
-```
-
----
-
-## 5. Quickstart & Usage
-
-### Setup Environment
-Activate the project virtual environment:
+1. **Environment:**
 ```bash
-source "/home/roshanbinoj/Documents/BTP/venv/bin/activate"
+python -m venv venv
+source venv/bin/activate
+pip install -e .[dev]
 ```
 
-### Run Automated Tests (TDD Suite)
-Run all 32 unit and regression tests:
+2. **Running the Comprehensive Test Suite (34 Tests, Proposition Verification):**
 ```bash
-pytest tests/ -v
+pytest tests/test_pc_csg.py -v
 ```
 
-### Run Hardware Benchmark
-Profile per-component latency and FPS throughput on GPU:
+3. **Running the Hardware Latency Benchmark:**
 ```bash
-python benchmark.py
+python benchmark_pccsg.py
 ```
 
-### Run Interactive ST-HGST Level-3 Takeover HUD Demo
-Run the live dual-stream inside-outside cognitive takeover monitor:
+4. **Running the Interactive Counterfactual HUD Demo:**
 ```bash
-python demo_dual_stream.py
+# Using the configured project virtual environment:
+/home/roshanbinoj/Documents/BTP/venv/bin/python demo_pc_csg.py
 ```
+* **Interactive Controls:**
+  - `[1]` Scenario A: Nominal Highway Cruising ($CRT < 0.25$, Safe)
+  - `[2]` Scenario B: Advisory — Lead Vehicle Decelerating ($0.25 \le CRT < 0.50$)
+  - `[3]` Scenario C: Alert — Truck Swerve Hazard ($0.50 \le CRT < 0.70$)
+  - `[4]` Scenario D: Emergency — Impending Collision & Blocked Routes ($CRT \ge 0.85$, AEB + MRM)
+  - `[S]` Save snapshot of the current view to `demo_outputs/`
+  - `[Q]` Quit interactive demo
 
-**Interactive Controls in GUI:**
-- `[1]`: Trigger **Scenario A** (Aligned Attention $\to EAG < 0.20 \to$ Level 0 Safe Handover)
-- `[2]`: Trigger **Scenario B** (Inattentional Blindness $\to 0.20 \le EAG < 0.65 \to$ Level 1 Spatial HUD Cue)
-- `[3]`: Trigger **Scenario C** (Critical Distraction / Sleep $\to EAG \ge 0.65 \to$ Level 2 Autonomous MRM)
-- `[Q]`: Exit demonstration.
-
-### Run Legacy Driver Drowsiness HUD Demo (SG-TTrans)
 ```bash
-# Synthetic camera mode with HUD:
-python demo_stream.py --source synthetic
+# Export static HUD screenshots of all scenarios:
+/home/roshanbinoj/Documents/BTP/venv/bin/python demo_pc_csg.py --save-images --headless
+
+# Render a full animated demonstration video (MP4):
+/home/roshanbinoj/Documents/BTP/venv/bin/python demo_pc_csg.py --save-video --headless
 ```
 
+---
 
-**Interactive Keyboard Controls in GUI:**
-- `[1]`: Trigger **Scenario A** (Normal Blink: $RSI = 0.071 \to \text{Level 0}$)
-- `[2]`: Trigger **Scenario B** (Moderate Yawn: $RSI = 0.452 \to \text{Level 1}$)
-- `[3]`: Trigger **Scenario C** (Critical Micro-Sleep: $RSI = 0.841 \to \text{Level 3 AEB}$)
-- `[Q]`: Exit demonstration.
+## 🏎️ Real-World Dataset Training & Real Video Inference
+
+### 1. Training on Real-World Traffic Anomaly Datasets
+Train the PC-CSG model end-to-end on real multi-agent traffic scenes (utilizing real bounding boxes, dynamic kinematics, and accident annotations from Hugging Face traffic-accident-detection):
+
+```bash
+/home/roshanbinoj/Documents/BTP/venv/bin/python train_real_world.py --epochs 10 --batch-size 16 --lr 0.0003
+```
+* **Loss formulation**: Multi-task objective combining continuous CRT risk error, 5-level preemptive intervention classification, and differentiable PIKV physics regularization (penalizing tire friction violations $\mu \cdot g$).
+* Saves best weights to `checkpoints/pc_csg_real_best.pt` and training curves to `checkpoints/real_training_curves.png`.
+
+### 2. Running Inference on Real Driving Dashcam Videos & Webcams
+Run the full real-time pipeline (YOLOv8 tracking + Kinematics + PC-CSG + HUD) directly on real road footage:
+
+```bash
+# Run on default real dashcam video with interactive HUD:
+/home/roshanbinoj/Documents/BTP/venv/bin/python run_real_video.py
+
+# Run on a specific video and export annotated video to MP4:
+/home/roshanbinoj/Documents/BTP/venv/bin/python run_real_video.py \
+  --video "/home/roshanbinoj/Downloads/Driver Drowsiness Dataset (DDD)/road_dashcam_real.mp4" \
+  --save-video "demo_outputs/real_dashcam_annotated.mp4"
+
+# Run on real highway traffic video:
+/home/roshanbinoj/Documents/BTP/venv/bin/python run_real_video.py \
+  --video "/home/roshanbinoj/Downloads/Driver Drowsiness Dataset (DDD)/road_traffic_video.webm" \
+  --save-video "demo_outputs/real_highway_annotated.mp4"
+
+# Run live on webcam device #0:
+/home/roshanbinoj/Documents/BTP/venv/bin/python run_real_video.py --webcam 0
+
+# List all available sample road videos on the system:
+/home/roshanbinoj/Documents/BTP/venv/bin/python run_real_video.py --list-videos
+```
+---
+
+## 📚 Paper & Documentation
+
+The complete academic manuscript detailing the mathematical formulation, algorithmic proofs (Proposition 1 & 2), and extensive experimental validation is located in the `Sample_Template/` directory.
+
+- `elsarticle-template.tex` - Main Elsevier template manuscript
+- `mybibfile.bib` - Citations encompassing the latest 2024-2026 literature
+
+**Authors:**
+Roshan Binoj, Mohammed Sirajudheen, Hafiz Feroze Vellukuzhi, Vishwanath Darur (IIIT Kottayam)
