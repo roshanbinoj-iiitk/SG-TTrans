@@ -26,7 +26,29 @@ dependencies = [
 dev = [
     "pytest>=7.0.0",
 ]
+web = [
+    "gradio>=4.0.0",
+    "matplotlib>=3.7.0",
+]
+all = [
+    "pytest>=7.0.0",
+    "gradio>=4.0.0",
+    "matplotlib>=3.7.0",
+]
+
+[project.scripts]
+pc-csg = "pc_csg.cli:main"
+pc-csg-demo = "pc_csg.cli:main_demo"
+pc-csg-video = "pc_csg.cli:main_video"
+pc-csg-bench = "pc_csg.cli:main_bench"
+pc-csg-web = "pc_csg.cli:main_web"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pc_csg*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+

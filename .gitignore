@@ -12,6 +12,6 @@ data
 *.mp4
 *.webm
 *.task
-
-.agents/
-chat.md
+*.egg-info/
+build/
+dist/
