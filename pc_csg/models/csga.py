@@ -270,6 +270,8 @@ class CounterfactualSceneGraphAttention(nn.Module):
 
         return {
             "scene_embeddings": h,
+            "cf_embeddings": cf_out.view(B, N, self.num_cf, self.d_model),
+            "cf_queries": cf_queries,
             "cf_risk_logits": cf_risk_logits,
             "causal_gates": causal_gates,
             "critical_mask": critical_mask,

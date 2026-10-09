@@ -253,11 +253,14 @@ class PhysicsInformedKinematicValidator(nn.Module):
             total_checks += 1
 
         # 4. Friction circle: a_total² ≤ (μ·g)²
+        has_friction_violation = torch.zeros(B, dtype=torch.bool, device=trajectory.device)
         if a_lon.numel() > 0 and a_lat.numel() > 0:
             min_len = min(a_lon.shape[1], a_lat.shape[1])
             a_total_sq = a_lon[:, :min_len]**2 + a_lat[:, :min_len]**2
             friction_sq = (c.friction_mu * c.gravity) ** 2
-            friction_violation = (a_total_sq > friction_sq).float().mean(dim=-1)
+            friction_step_violations = a_total_sq > friction_sq
+            has_friction_violation = friction_step_violations.any(dim=-1)
+            friction_violation = friction_step_violations.float().mean(dim=-1)
             violations = violations + friction_violation
             total_checks += 1
 
@@ -269,7 +272,8 @@ class PhysicsInformedKinematicValidator(nn.Module):
 
         # Normalize violation score to [0, 1]
         violation_score = (violations / max(total_checks, 1)).clamp(0.0, 1.0)
-        validity_mask = violation_score < 0.5  # Physically valid if <50% violations
+        # Proposition 1: Eliminates all trajectories where total acceleration exceeds Coulomb friction bound
+        validity_mask = (~has_friction_violation) & (violation_score < 0.5)
 
         return validity_mask, violation_score
 

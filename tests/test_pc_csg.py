@@ -430,8 +430,9 @@ class TestProposition2:
                 traj[0, t, 1] = 20.0 * dt * (t - 2)  # Sudden lateral
 
         valid, violation = pikv(traj, torch.tensor([20.0]))
-        # Should detect the violation
+        # Should detect the violation and eliminate trajectory (Proposition 1)
         assert violation[0].item() > 0.1
+        assert not valid[0].item()
 
     def test_gentle_curve_valid(self):
         """Gentle curve within friction limits should be valid."""

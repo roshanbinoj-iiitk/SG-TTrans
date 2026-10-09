@@ -16,11 +16,14 @@ from pc_csg.types import KinematicState, ObjectClass, SceneGraph, SceneNode
 def compute_ttc(
     ego_x: float, ego_y: float, ego_vx: float, ego_vy: float,
     obj_x: float, obj_y: float, obj_vx: float, obj_vy: float,
+    collision_radius: float = 2.5,
 ) -> float:
     """
     Compute Time-to-Collision between ego vehicle and a scene participant.
 
-    TTC = d(t) / (-d_dot(t))  if d_dot < 0 (closing), else +inf.
+    Uses Closest Point of Approach (CPA) kinematics:
+    If relative trajectory closest approach distance exceeds the collision corridor,
+    vehicles safely clear each other and TTC is infinite.
     """
     dx = obj_x - ego_x
     dy = obj_y - ego_y
@@ -31,12 +34,22 @@ def compute_ttc(
     if dist < 1e-6:
         return 0.0
 
-    # Rate of change of distance (projection of relative velocity onto distance vector)
-    d_dot = (dx * dvx + dy * dvy) / dist
+    v_rel_sq = dvx**2 + dvy**2
+    if v_rel_sq < 1e-6:
+        return float("inf")
 
-    if d_dot >= 0:
+    t_cpa = -(dx * dvx + dy * dvy) / v_rel_sq
+    if t_cpa <= 0:
         return float("inf")  # Diverging — no collision
-    return float(-dist / d_dot)
+
+    # Distance at closest point of approach
+    dx_cpa = dx + dvx * t_cpa
+    dy_cpa = dy + dvy * t_cpa
+    d_cpa = np.sqrt(dx_cpa**2 + dy_cpa**2)
+    if d_cpa > collision_radius:
+        return float("inf")  # Safe lateral passing corridor
+
+    return float(t_cpa)
 
 
 def compute_hazard_weight(

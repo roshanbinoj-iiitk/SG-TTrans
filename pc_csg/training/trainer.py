@@ -5,6 +5,7 @@ Executes end-to-end multi-task training with mixed precision,
 validation monitoring, and checkpoint persistence.
 """
 
+import json
 import os
 import time
 from typing import Dict, Optional, Tuple
@@ -223,6 +224,21 @@ class RealWorldPCCSGTrainer:
         total_time = time.time() - start_train_time
         print("=" * 68)
         print(f"Training completed in {total_time:.1f}s. Best model saved to: {best_checkpoint_path}")
+
+        # Save training history JSON
+        history_path = os.path.join(self.save_dir, "training_history.json")
+        history_records = [
+            {
+                "epoch": ep + 1,
+                "train_loss": float(self.history["train_loss"][ep]),
+                "val_loss": float(self.history["val_loss"][ep]),
+                "val_crt_mae": float(self.history["val_crt_mae"][ep]),
+                "val_acc": float(self.history["val_acc"][ep]),
+            }
+            for ep in range(len(self.history["train_loss"]))
+        ]
+        with open(history_path, "w") as f:
+            json.dump(history_records, f, indent=2)
 
         self._plot_curves()
         return self.history

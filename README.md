@@ -7,7 +7,7 @@
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.x-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![CI](https://github.com/roshanbinoj-iiitk/SG-TTrans/actions/workflows/ci.yml/badge.svg)](https://github.com/roshanbinoj-iiitk/SG-TTrans/actions/workflows/ci.yml)
-[![Edge Latency](https://img.shields.io/badge/Edge%20Latency-6.55ms%20(152.6%20FPS)-00C853)](scripts/reproduce_paper_results.py)
+[![Edge Latency](https://img.shields.io/badge/Edge%20Latency-6.68ms%20(149.7%20FPS)-00C853)](scripts/reproduce_paper_results.py)
 [![Preemptive Lead Time](https://img.shields.io/badge/Preemptive%20Lead%20Time-2.84s-blueviolet)](scripts/reproduce_paper_results.py)
 [![Status](https://img.shields.io/badge/Manuscript-Elsevier%20Preprint-blue)](CITATION.cff)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -32,7 +32,7 @@ Conventional autonomous vehicle (AV) perception systems are fundamentally **reac
 > *"What if the lead truck abruptly brakes at maximum friction?"*  
 > *"What if the adjacent sedan veers into our lane across the wet lane divider?"*
 
-By coupling a **Counterfactual Scene Graph Attention (CSGA)** transformer with a differentiable **Physics-Informed Kinematic Validator (PIKV)**, PC-CSG prunes physically impossible trajectories (e.g. friction-circle violations) and computes a continuous **Counterfactual Risk Tensor (CRT)**. This provides autonomous platforms with up to **2.84 seconds of preemptive lead time** at **152.6 FPS edge throughput**.
+By coupling a **Counterfactual Scene Graph Attention (CSGA)** transformer with a differentiable **Physics-Informed Kinematic Validator (PIKV)**, PC-CSG prunes physically impossible trajectories (e.g. friction-circle violations) and computes a continuous **Counterfactual Risk Tensor (CRT)**. This provides autonomous platforms with up to **2.84 seconds of preemptive lead time** at **149.7 FPS edge throughput**.
 
 ---
 
@@ -72,7 +72,7 @@ The complete end-to-end PC-CSG inference pipeline combines graph attention, diff
 3. **Physics-Informed Kinematic Validator (PIKV):**
    Propagates trajectory hypotheses through a non-linear kinematic bicycle model and validates them against vehicle dynamics:
    $$\sqrt{a_{\text{long}}^2 + a_{\text{lat}}^2} \le \mu \cdot g$$
-   Hypotheses violating the Coulomb friction circle or actuator steering limits ($\delta_{\max}$) are hard-pruned. **PIKV eliminates 43.2% of physically impossible hallucinated trajectories, cutting false positive interventions by 41.7%.**
+   Hypotheses violating the Coulomb friction circle or actuator steering limits ($\delta_{\max}$) are hard-pruned. **PIKV eliminates 43.9% of physically impossible hallucinated trajectories, cutting false positive interventions by 41.7%.**
 
 4. **Counterfactual Risk Tensor (CRT) & Intervention Arbiter:**
    Computes a continuous scalar metric $CRT \in [0, 1]$ mapped to five graduated safety levels:
@@ -170,14 +170,14 @@ Evaluated on an NVIDIA RTX 3050 Laptop GPU (CUDA, PyTorch 2.x):
 
 | Pipeline Stage | Latency (ms) | Relative Share |
 | :--- | :---: | :---: |
-| **Scene Graph Construction** | 0.24 ms | 3.7% |
-| **CSGA Transformer Engine** | 1.62 ms | 25.0% |
-| **Kinematic Bicycle Propagation** | 4.01 ms | 61.8% |
-| **Physics-Informed Validator (PIKV)** | 0.49 ms | 7.5% |
-| **CRT Arbiter & Intervention Level** | 0.13 ms | 2.0% |
-| **Total End-to-End Pipeline** | **6.49 ms** | **100.0%** |
+| **Scene Graph Construction** | 0.33 ms | 5.0% |
+| **CSGA Transformer Engine** | 1.57 ms | 23.5% |
+| **Kinematic Bicycle Propagation** | 4.12 ms | 61.7% |
+| **Physics-Informed Validator (PIKV)** | 0.53 ms | 7.9% |
+| **CRT Arbiter & Intervention Level** | 0.13 ms | 1.9% |
+| **Total End-to-End Pipeline** | **6.68 ms** | **100.0%** |
 
-$$\textbf{Effective Real-Time Throughput: 154.2 FPS (Automotive Edge Requirement: 30 FPS)}$$
+$$\textbf{Effective Real-Time Throughput: 149.7 FPS (Automotive Edge Requirement: 30 FPS)}$$
 
 ### Table 2: Ablation Study & Hypothesis Pruning
 
@@ -196,7 +196,7 @@ $$\textbf{Effective Real-Time Throughput: 154.2 FPS (Automotive Edge Requirement
 All algorithms and theoretical properties are validated with automated unit and regression tests:
 
 ```bash
-# Run complete test suite (41 unit and integration tests)
+# Run complete test suite (43 unit and integration tests)
 pytest tests/ -v
 ```
 

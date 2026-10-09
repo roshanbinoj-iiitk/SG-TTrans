@@ -55,6 +55,25 @@ class PCCSGNetwork(nn.Module):
             nn.Linear(config.d_model, config.prediction_horizon * 2),
         )
 
+        # Mode-specific control priors (K, H, 2): [accel, steer]
+        K = config.num_counterfactuals
+        H = config.prediction_horizon
+        priors = torch.zeros(K, H, 2)
+        if K >= 6:
+            # Mode 0: Sudden Brake (negative longitudinal acceleration)
+            priors[0, :, 0] = -5.0
+            # Mode 1: Hard Swerve Left (sharp steering left)
+            priors[1, :, 1] = 0.45
+            # Mode 2: Hard Swerve Right (sharp steering right)
+            priors[2, :, 1] = -0.45
+            # Mode 3: Sudden Acceleration (positive longitudinal acceleration)
+            priors[3, :, 0] = 4.0
+            # Mode 4: Lane Departure (gradual steering drift)
+            priors[4, :, 1] = 0.15
+            # Mode 5: Stationary / Emergency Stop (heavy deceleration to stop)
+            priors[5, :, 0] = -7.5
+        self.register_buffer("mode_control_priors", priors)
+
         # ── Initial state extractor ──
         # Maps node features to initial kinematic state (x, y, v, θ)
         self.state_extractor = nn.Sequential(
@@ -104,12 +123,16 @@ class PCCSGNetwork(nn.Module):
         critical_mask = csga_out["critical_mask"]        # (B, N)
 
         # ── Step 2: Decode counterfactual trajectories ──
-        # For each critical agent × counterfactual mode, predict trajectory
-        cf_embeds = scene_embeds.unsqueeze(2).expand(B, N, K, self.config.d_model)
+        # For each critical agent × counterfactual mode, decode trajectory from CF embeddings
+        cf_embeds = csga_out.get("cf_embeddings")
+        if cf_embeds is None:
+            cf_embeds = scene_embeds.unsqueeze(2).expand(B, N, K, self.config.d_model)
         cf_flat = cf_embeds.reshape(B * N * K, self.config.d_model)
 
         controls = self.trajectory_decoder(cf_flat)      # (BNK, H*2)
-        controls = controls.view(B * N * K, H, 2)       # (BNK, H, 2)
+        controls = controls.view(B, N, K, H, 2)
+        controls = controls + self.mode_control_priors.unsqueeze(0).unsqueeze(0)
+        controls = controls.view(B * N * K, H, 2)
 
         # Extract initial states
         init_states = self.state_extractor(raw_node_features)  # (B, N, 4)

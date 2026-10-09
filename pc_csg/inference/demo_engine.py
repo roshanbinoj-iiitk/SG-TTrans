@@ -54,71 +54,127 @@ class ScenarioState:
         self.worst_ttc: float = float("inf")
 
 
+from pc_csg.scene_graph import compute_ttc, compute_hazard_weight
+
+
+def compute_scenario_metrics(
+    ego_speed: float,
+    agents: List[dict],
+    config: Optional[PCCSGConfig] = None,
+) -> Tuple[float, float, InterventionLevel, str]:
+    """Compute worst TTC, continuous CRT, and intervention decision dynamically."""
+    if config is None:
+        config = PCCSGConfig()
+
+    ttcs: List[float] = []
+    hazards: List[float] = []
+    cf_risks: List[List[float]] = []
+
+    for a in agents:
+        ttc = compute_ttc(0.0, 0.0, ego_speed, 0.0, a["x"], a["y"], a["vx"], a.get("vy", 0.0))
+        ttcs.append(ttc)
+        hw = compute_hazard_weight(ttc, config.tau_crit, config.lambda_scale)
+        hazards.append(hw)
+
+        # 6 counterfactual modes: brake, swerve left/right, accel, drift, halt
+        modes = [
+            compute_hazard_weight(compute_ttc(0.0, 0.0, ego_speed, 0.0, a["x"], a["y"], a["vx"] - 6.0, a.get("vy", 0.0)), config.tau_crit, config.lambda_scale),
+            compute_hazard_weight(compute_ttc(0.0, 0.0, ego_speed, 0.0, a["x"], a["y"] - 1.8, a["vx"], a.get("vy", 0.0)), config.tau_crit, config.lambda_scale),
+            compute_hazard_weight(compute_ttc(0.0, 0.0, ego_speed, 0.0, a["x"], a["y"] + 1.8, a["vx"], a.get("vy", 0.0)), config.tau_crit, config.lambda_scale),
+            compute_hazard_weight(compute_ttc(0.0, 0.0, ego_speed, 0.0, a["x"], a["y"], a["vx"] + 3.5, a.get("vy", 0.0)), config.tau_crit, config.lambda_scale),
+            compute_hazard_weight(compute_ttc(0.0, 0.0, ego_speed, 0.0, a["x"], a["y"] + 0.8, a["vx"], a.get("vy", 0.0)), config.tau_crit, config.lambda_scale),
+            compute_hazard_weight(compute_ttc(0.0, 0.0, ego_speed, 0.0, a["x"], a["y"], 0.0, 0.0), config.tau_crit, config.lambda_scale),
+        ]
+        cf_risks.append(modes)
+
+    worst_ttc = min(ttcs) if ttcs else float("inf")
+    cf_tensor = torch.tensor([cf_risks], dtype=torch.float32)
+    hw_tensor = torch.tensor([hazards], dtype=torch.float32)
+    val_tensor = torch.ones_like(cf_tensor, dtype=torch.bool)
+    # Aggressive swerves at high speed violate Coulomb friction bound
+    if ego_speed > 28.0:
+        val_tensor[0, :, 1] = False
+        val_tensor[0, :, 2] = False
+
+    crt_eng = CRTEngine(config)
+    crt_scalar = crt_eng.compute_crt(cf_tensor, val_tensor, hw_tensor).item()
+    arbiter = PreemptiveInterventionArbiter(config)
+    decision = arbiter.arbitrate(crt_scalar, hw_tensor[0], cf_tensor[0], hw_tensor[0], worst_ttc)
+
+    return float(crt_scalar), float(worst_ttc), decision.level, decision.action_description
+
+
 def create_scenarios() -> Dict[int, ScenarioState]:
-    """Create the 4 demonstration scenarios."""
+    """Create the 4 demonstration scenarios with dynamically evaluated CRT and kinematics."""
+    config = PCCSGConfig()
+
     # Scenario A: Nominal
     a = ScenarioState("Scenario A", "Highway Cruise — All Clear", "nominal")
     a.ego_speed = 27.8  # 100 km/h
     a.agents = [
-        {"id": 0, "class": "Vehicle", "x": 60, "y": 0, "vx": 26, "vy": 0, "ttc": 15.0,
+        {"id": 0, "class": "Vehicle", "x": 60, "y": 0, "vx": 26, "vy": 0,
          "bbox": (0.48, 0.42, 0.06, 0.04), "color": COLORS["vehicle"]},
-        {"id": 1, "class": "Vehicle", "x": 80, "y": -3.5, "vx": 28, "vy": 0, "ttc": float("inf"),
+        {"id": 1, "class": "Vehicle", "x": 80, "y": -3.5, "vx": 28, "vy": 0,
          "bbox": (0.62, 0.44, 0.04, 0.03), "color": COLORS["vehicle"]},
-        {"id": 2, "class": "Vehicle", "x": 45, "y": 3.5, "vx": 25, "vy": 0, "ttc": 20.0,
+        {"id": 2, "class": "Vehicle", "x": 45, "y": 3.5, "vx": 25, "vy": 0,
          "bbox": (0.35, 0.40, 0.05, 0.04), "color": COLORS["vehicle"]},
     ]
-    a.crt_value = 0.08
-    a.intervention_level = InterventionLevel.NOMINAL
-    a.intervention_text = "Nominal. All counterfactual scenarios safe."
-    a.worst_ttc = 15.0
+    crt_a, ttc_a, level_a, desc_a = compute_scenario_metrics(a.ego_speed, a.agents, config)
+    a.crt_value = round(crt_a, 3)
+    a.worst_ttc = round(ttc_a, 1)
+    a.intervention_level = level_a
+    a.intervention_text = desc_a
 
     # Scenario B: Advisory
     b = ScenarioState("Scenario B", "Lead Vehicle Decelerating — Potential Risk", "advisory")
     b.ego_speed = 30.6  # 110 km/h
     b.agents = [
-        {"id": 0, "class": "Vehicle", "x": 35, "y": 0, "vx": 22, "vy": 0, "ttc": 4.1,
+        {"id": 0, "class": "Vehicle", "x": 35, "y": 0, "vx": 22, "vy": 0,
          "bbox": (0.50, 0.43, 0.08, 0.05), "color": COLORS["yellow"]},
-        {"id": 1, "class": "Vehicle", "x": 50, "y": -3.5, "vx": 29, "vy": 0, "ttc": 12.0,
+        {"id": 1, "class": "Vehicle", "x": 50, "y": -3.5, "vx": 29, "vy": 0,
          "bbox": (0.60, 0.45, 0.05, 0.03), "color": COLORS["vehicle"]},
-        {"id": 2, "class": "Pedestrian", "x": 40, "y": 8, "vx": -1, "vy": -0.5, "ttc": 8.0,
+        {"id": 2, "class": "Pedestrian", "x": 40, "y": 8, "vx": 2, "vy": -0.5,
          "bbox": (0.70, 0.48, 0.02, 0.04), "color": COLORS["pedestrian"]},
     ]
-    b.crt_value = 0.38
-    b.intervention_level = InterventionLevel.ADVISORY
-    b.intervention_text = "Advisory: CF 'sudden_brake' on Agent 0 yields TTC=1.8s"
-    b.worst_ttc = 4.1
+    crt_b, ttc_b, level_b, desc_b = compute_scenario_metrics(b.ego_speed, b.agents, config)
+    b.crt_value = round(crt_b, 3)
+    b.worst_ttc = round(ttc_b, 1)
+    b.intervention_level = level_b
+    b.intervention_text = desc_b
 
     # Scenario C: Alert
     c = ScenarioState("Scenario C", "Lane Change Conflict — Counterfactual Swerve Risk", "alert")
     c.ego_speed = 33.3  # 120 km/h
     c.agents = [
-        {"id": 0, "class": "Vehicle", "x": 25, "y": 0, "vx": 20, "vy": 0, "ttc": 1.9,
+        {"id": 0, "class": "Vehicle", "x": 25, "y": 0, "vx": 20, "vy": 0,
          "bbox": (0.48, 0.42, 0.10, 0.06), "color": COLORS["orange"]},
-        {"id": 1, "class": "Truck", "x": 30, "y": -3.5, "vx": 22, "vy": 0.5, "ttc": 2.7,
+        {"id": 1, "class": "Truck", "x": 30, "y": -3.5, "vx": 22, "vy": 0.5,
          "bbox": (0.55, 0.38, 0.12, 0.08), "color": COLORS["orange"]},
-        {"id": 2, "class": "Vehicle", "x": 20, "y": 3.5, "vx": 28, "vy": -0.3, "ttc": 5.0,
+        {"id": 2, "class": "Vehicle", "x": 20, "y": 3.5, "vx": 28, "vy": -0.3,
          "bbox": (0.38, 0.46, 0.06, 0.04), "color": COLORS["vehicle"]},
     ]
-    c.crt_value = 0.62
-    c.intervention_level = InterventionLevel.ALERT
-    c.intervention_text = "ALERT: CF 'hard_swerve_right' on Truck yields collision in 0.9s"
-    c.worst_ttc = 1.9
+    crt_c, ttc_c, level_c, desc_c = compute_scenario_metrics(c.ego_speed, c.agents, config)
+    c.crt_value = round(crt_c, 3)
+    c.worst_ttc = round(ttc_c, 1)
+    c.intervention_level = level_c
+    c.intervention_text = desc_c
 
     # Scenario D: Emergency
     d = ScenarioState("Scenario D", "Stationary Barrier + Lead Vehicle Braking", "critical")
     d.ego_speed = 27.8  # 100 km/h
     d.agents = [
-        {"id": 0, "class": "Vehicle", "x": 12, "y": 0, "vx": 5, "vy": 0, "ttc": 0.5,
+        {"id": 0, "class": "Vehicle", "x": 12, "y": 0, "vx": 5, "vy": 0,
          "bbox": (0.48, 0.42, 0.12, 0.07), "color": COLORS["critical_red"]},
-        {"id": 1, "class": "Barrier", "x": 25, "y": 1, "vx": 0, "vy": 0, "ttc": 0.9,
+        {"id": 1, "class": "Barrier", "x": 25, "y": 1, "vx": 0, "vy": 0,
          "bbox": (0.55, 0.50, 0.08, 0.03), "color": COLORS["red"]},
-        {"id": 2, "class": "Pedestrian", "x": 18, "y": 4, "vx": -1.5, "vy": -1, "ttc": 2.1,
+        {"id": 2, "class": "Pedestrian", "x": 18, "y": 4, "vx": -1.5, "vy": -1,
          "bbox": (0.65, 0.48, 0.02, 0.05), "color": COLORS["pedestrian"]},
     ]
-    d.crt_value = 0.93
-    d.intervention_level = InterventionLevel.EMERGENCY
-    d.intervention_text = "EMERGENCY: AEB + MRM. CF analysis: all escape routes blocked."
-    d.worst_ttc = 0.5
+    crt_d, ttc_d, level_d, desc_d = compute_scenario_metrics(d.ego_speed, d.agents, config)
+    d.crt_value = round(crt_d, 3)
+    d.worst_ttc = round(ttc_d, 1)
+    d.intervention_level = level_d
+    d.intervention_text = desc_d
 
     return {1: a, 2: b, 3: c, 4: d}
 
