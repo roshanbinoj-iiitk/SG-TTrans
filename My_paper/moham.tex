@@ -1,0 +1,71 @@
+\documentclass{article}
+\usepackage{graphicx} % Required for inserting images
+
+\title{fg}
+\author{mohammed siraj}
+\date{October 2026}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+This section contain recent works from 2024--2026 across four related areas, summarized in Table~\ref{table_literature}.
+
+The main issue was detecting an object's next move, which was difficult to do with the technology present at that day so these two person Gehrig and Scaramuzza, proposed a paper in which they used CNN and GNN. How it worked was normal camera basically detects complete frames so this event camera basically detects brightness changes, which helped them achieve a higher FPS camera while requiring less bandwidth. 
+
+Normally, a car should predict where it will be in a few seconds, so for this purpose we create a model that predicts the future moves the car can take from historical data.  So physics-informed prediction does the same thing; it uses the preexisting data to analyze and understand the vehicle's movement to reduce unrealistic predictions. The problem was that the vehicle-tracking system does not detect things because of sensor failure, so to avoid it, Liao et al. proposed a paper in which the technique used three things: wavelet-based models and a single future path. The system outputs one final path or trajectory rather than considering all possibilities. Another paper: Long et al. solved a problem of the system detecting and separating trajectory segments because it lost them for several second and then detect it again. So it solved the issue by the help of a PINN, in which a neural network combine with physical constraints. We did offline reconstruction, so the drawback of this paper was that it didn't help predict future movement to avoid collisions. Another paper, Baden et al., used kinematics to remove infeasible paths, with a slight accuracy cost.
+
+
+Ahmadi et al. tried to address the issue of treating every agent's movement equally and prioritising some agents over others. Their paper concluded that it achieved a 54 improvement.The main limitation of this paper was that it was very hard to identify which agent was more relevant. Han and Xu(2025) proposed CICR to improve trajectory prediction by explicitly modelling causal relationships and alternative futures. The normal model relied mainly on location, which limited its ability to learn to respond to nearby vehicles. This is why the concept of causal inference emerged, aiming to separate meaningful relationships from misleading correlations. CICR uses a module known as causal intervention with front-door adjustment and cross-attention to reduce confounding in its trajectory representations. ADE and FDE are the most standard trajectory-prediction metrics.If a model predicts the position for the next 5 seconds, ADE calculates the average error over this period, while FDE measures the error at the end. .Wang et al. emphasized understanding driving scenes in different scenarios, such as where to stop and where movement should be affected. Jing et al. proposed a paper in which the model uses a generative bird's-eye view with a causal interaction graph and guided intervention to, rather than forcing a collision in the scene, ensure realistic safety. Cue et al. proposed a model that reasons about intermediate steps.
+
+Hallyburton and Pajic developed the NeuSParPer model, which connects object detection with a scene graph, helping to move beyond object detection and relate to other elements. Wu et al. proposed the field concept, which represents dangerous obstacles near the vehicle and helps the driver choose a safe path. Ning et al. proposed a concept called Strap, which combines risk fields with spatio-temporal attention. According to the person, it helped improve the error by 31 percent.
+
+I)Low-latency perception
+1. Gehrig and Scaramuzza record brightness changes and use CNNs and GNNs to extract object information.
+2. Zhou and Jiang (2024) used various deep learning methods to detect objects using event cameras. Limitation: it is a survey of detection methods, not a concrete method.
+II) Physics-informed trajectory prediction
+3.Liao et al(2024)
+So basically, it used a wavelet and a bicycle model to construct the vehicle trajectories that were missing from the observation
+Limitation: it did not predict all the paths; it only predicted one path
+4Long et al(2024)
+They used physics kinematic equations to help derive the vehicle movement
+5.Baden et al(2025)-TPK
+Basically, the paper directly combined the transformer with the vehicle constraint 
+6.Chugh et al. (2025)-Xtrack
+It combined an LSTM model with the physics kinematic equation so that the model learns from the historical vehicle movement while considering physics motion rules
+7.Li and Westerlund (2025)
+They used probability to represent multiple possible future trajectories and mpc based smoothing 
+III) Causal and counterfactual reasoning
+8Ahmadi et al(2025)
+It used causal discovery, which helped identify the surrounding agents.
+9 Han and Xu(2025)
+They used two things: reasoning and counterfactual decoding, which helped in predicting the various movements
+10 Wang et al.(2025)
+In this driving scene was basically decomposed into two type of relationships: spatial and temporal causal relationships, which helped improve prediction in the dataset.
+11.Jing et al(2026)
+They basically modified the way driving scenes are positioned by changing the behaviour of the agent. This helped the researcher to handle dangerous situations.
+So the main drawback was that it was very difficult and computationally expensive to make the same scenarios that happen in real life.
+Scene graphs and risk modelling
+10 Hallyburton and pajic(2025)
+So it's basically a graphical structure where scene graphs represent objects and their relationships, such as a pedestrian crossing in front of a vehicle.
+11.Wu et al(2024)
+It used reachable sets and risk potential fields to help avoid collisions in the CARLA simulator. A risk field assigns higher risk to certain regions, helping the planner choose a safer path.
+12. Ning et al(2025)
+So they basically compared the risk field with spatio-temporal attention to help predict the vehicle trajectory or the path, and it helped by 31.2 per cent 
+
+three research limitations:
+*Existing approaches helped generate alternative scenarios for offline testing. Some use normal physics to predict the path realistically, which is not an efficient way to detect a collision.
+*Scene relationships and counterfactuals remain separate. Basically, this method helped identify the road user, but it can't connect with the vehicle's real movement, like braking, changing lanes, or going to another lane.
+*Risk field planners help avoid dangerous situations, but they can generate driver assistance warnings, which are important in certain cases, sending various types of warnings like caution warnings and all.
+
+This limitation can be avoided. PC-CSG framework we made helped avoid this limitation:
+1. Scene graphs: we establish them in such a way that there is a strong relationship with the user, road, and safety.
+2. CSGA evaluates various scenarios to examine alternate driving outcomes.
+3. CRT does the work of converting the rest of the risk into action and warning.
+
+
+\end{document}
+This section contain recent works from 2024--2026 across four related areas, summarized in Table~\ref{table_literature}.
+
+The main issue was detecting an object's next move, which was difficult to do with the technology present at that day so these two person Gehrig and Scaramuzza, proposed a paper in which they used CNN and GNN. How it worked was normal camera basically detects complete frames so this event camera basically detects brightness changes, which helped them achieve a higher FPS camera while requiring less bandwidth. 

@@ -17,7 +17,7 @@
 \usepackage{algpseudocode}
 
 \usepackage{multirow}
-\usepackage{mathtools}  
+\usepackage{mathtools}
 \usepackage{color}
 \usepackage{soul}
 \usepackage{comment}
@@ -31,7 +31,10 @@
 \newcommand\tab[1][0.73cm]{\hspace*{#1}}
 
 \usepackage{tikz}
-\def\checkmark{\tikz\fill[scale=0.3](0,.35) -- (.25,0) -- (1,.7) -- (.25,.15) -- cycle;} 
+\usetikzlibrary{arrows.meta,positioning,calc}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.17}
+\def\checkmark{\tikz\fill[scale=0.3](0,.35) -- (.25,0) -- (1,.7) -- (.25,.15) -- cycle;}
 
 \usepackage{array}
 \newcolumntype{L}[1]{>{\raggedright\let\newline\\\arraybackslash\hspace{0pt}}m{#1}}
@@ -67,13 +70,13 @@
 
 \begin{abstract}
 % 1) One or two lines about the problem which you have taken
-Contemporary autonomous driving perception systems achieve high detection accuracy but remain fundamentally reactive, triggering safety interventions only after a hazard has been directly observed in the current sensor frame.
+Camera-based perception for autonomous vehicles has become very accurate at detecting objects, but the safety logic built on top of it is still mostly reactive: an emergency response is triggered only once a hazard is already visible and the Time-to-Collision (TTC) has dropped below a fixed limit.
 % 2) What is the issue which you are going to address in that problem/application
-This reactive paradigm creates a critical safety gap: the system cannot anticipate how surrounding traffic participants might behave under plausible ``what-if'' perturbations---such as a lead vehicle suddenly braking or an adjacent truck swerving---until the dangerous maneuver has already begun, leaving insufficient time for collision avoidance. Existing trajectory prediction models either lack physical grounding (producing impossible trajectories) or operate offline without real-time counterfactual reasoning capability.
+The problem we look at is that such a system never asks what nearby agents \emph{could} do next, for example a lead car braking hard or a truck swerving into the ego lane. Trajectory predictors that do generate future motions often produce paths a real vehicle cannot drive, which leads to false alarms, and most counterfactual reasoning methods in the literature run offline.
 % 3) Using what method, give the name of the method/technique
-To address this unexplored convergent gap, we propose the Physics-Constrained Counterfactual Scene Graph Transformer (PC-CSG), an end-to-end framework that unifies three individually emerging research threads into one real-time architecture: (i) dynamic spatio-temporal scene graph construction with causal attention gating that isolates physics-grounded inter-agent dependencies, (ii) counterfactual trajectory hypothesis generation via learned perturbation embeddings across six physically motivated ``what-if'' modes, and (iii) a differentiable Physics-Informed Kinematic Validator (PIKV) implementing a kinematic bicycle model that hard-constrains all hypothesized trajectories to satisfy tire friction circle, maximum steering, yaw rate, and acceleration limits. The framework computes the novel Counterfactual Risk Tensor (CRT), a continuous anticipatory safety metric that quantifies worst-case risk across all agent--counterfactual pairs, enabling preemptive graduated interventions before predicted collisions materialize.
+We propose the Physics-Constrained Counterfactual Scene Graph Transformer (PC-CSG). PC-CSG builds a scene graph of tracked traffic participants with TTC-based hazard weights, uses a Counterfactual Scene Graph Attention (CSGA) module to generate six learned ``what-if'' hypotheses per critical agent, rolls each hypothesis out with a kinematic bicycle model, and filters it with a Physics-Informed Kinematic Validator (PIKV) that checks the tyre friction circle, yaw rate, acceleration and speed limits. The surviving hypotheses are reduced to a single Counterfactual Risk Tensor (CRT) score that drives a five-level graduated intervention policy.
 % 4) What results you have achieved and how it is better than existing, mention the accuracy values or any other metric which you have used.
-Hardware profiling on an NVIDIA GeForce RTX 3050 Laptop GPU demonstrates that the complete PC-CSG pipeline executes in 6.68~ms (149.7~FPS), with the CSGA attention mechanism requiring 1.57~ms and PIKV validation 0.53~ms. Ablation studies show that PIKV filtering eliminates 43.9\% of physically impossible counterfactual trajectories, reducing the false positive intervention rate by 41.7\% compared to unconstrained counterfactual reasoning. The system achieves 94.6\% anticipatory anomaly detection accuracy with a mean preemptive lead time of 2.84~seconds before predicted collisions.
+The full model has 372,068 parameters and runs in 6.68~ms per frame (149.7~FPS) on an NVIDIA GeForce RTX 3050 Laptop GPU with 10 agents, 6 counterfactuals and a 15-step horizon, of which CSGA takes 1.57~ms and PIKV 0.53~ms. On 678 counterfactual hypotheses from real traffic validation sequences, PIKV rejected 312 (46.0\%) as physically infeasible. On our 120-sample validation split, PC-CSG reached 100.0\% anomaly classification accuracy with 0.0\% false positive rate, compared with 94.2\% accuracy and 100.0\% false positive rate for a reactive TTC-only baseline; we discuss why this split is too small and imbalanced to separate our own ablation variants.
 \end{abstract}
 
 \begin{keyword}
@@ -84,202 +87,303 @@ Autonomous Vehicles \sep Counterfactual Reasoning \sep Scene Graph Transformer \
 
 \linenumbers
 
-\section{Introduction} 
+\section{Introduction}
 % 1) Give an introduction about your problem and domain knowledge. Add few figures which could give insights about your problem.
-Autonomous driving systems have achieved remarkable perception accuracy through advances in deep learning architectures, including convolutional neural networks, vision transformers, and multi-modal sensor fusion pipelines \cite{yang2023bevformer, liu2022swin}. Modern detection systems routinely exceed 95\% mean average precision on benchmark datasets such as nuScenes \cite{caesar2020nuscenes} and Waymo Open \cite{sun2020waymo}. However, a fundamental structural limitation persists across all contemporary autonomous driving architectures: they operate as inherently \textbf{reactive} systems that detect hazards only after dangerous situations have already manifested in the current sensor frame \cite{zhou2024event, chen2025causal}.
+Perception for self-driving cars has improved a lot in the last few years. Transformer backbones such as Swin Transformer V2 \cite{liu2022swin} and bird's-eye-view (BEV) detectors such as BEVFormer v2 \cite{yang2023bevformer} are now standard, and large public datasets like nuScenes \cite{caesar2020nuscenes} and the Waymo Open Dataset \cite{sun2020waymo} made it possible to train and compare these models at scale. Sensor-side latency has also come down; for example, Gehrig and Scaramuzza \cite{gehrig2024low} combined a 20~FPS colour camera with an event camera and matched the latency of a 5,000~FPS camera.
 
-This reactive paradigm creates what we term \textbf{Anticipatory Perception Blindness (APB)}---the inability of a perception system to reason about plausible future states of surrounding traffic participants before those states occur. When a lead vehicle suddenly brakes, a pedestrian unexpectedly enters the roadway, or an adjacent truck initiates an unannounced lane change, existing systems can only respond after the maneuver has begun. At highway velocities exceeding 100~km/h, this reactive latency reduces the available collision avoidance window to fractions of a second, often below the minimum safe braking distance \cite{zhao2024risk, yang2025risk}.
+Better detection does not by itself make the vehicle safer, though. Most driver-assistance logic is still \textbf{reactive}: it waits until a hazard has shown up in the current frame and the TTC to that object has fallen below some threshold, and only then does it warn or brake. In this paper we call the gap between ``what the car currently sees'' and ``what nearby agents could plausibly do next'' \textbf{Anticipatory Perception Blindness (APB)}. A human driver who sees a truck drifting toward the lane line will slow down before the truck actually crosses it. A reactive system will not respond until the crossing has started.
 
-Achieving truly anticipatory autonomous perception requires addressing four interconnected technical challenges that remain unresolved in the literature:
+The speeds involved make this gap expensive. Figure~\ref{fig_intro} plots the braking distance $v^2/(2\mu g)$ on dry asphalt ($\mu = 0.7$) against the distance a car covers in one second. At 100~km/h the car moves 27.8~m every second, while the friction-limited braking distance alone is about 56.2~m. So every second of earlier warning is worth roughly half of the full braking distance at highway speed, and this is the main motivation for anticipating hazards rather than reacting to them.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.82\linewidth, height=6.2cm,
+    xlabel={Vehicle speed (km/h)}, ylabel={Distance (m)},
+    xmin=0, xmax=150, ymin=0, ymax=140,
+    domain=0:150, samples=61,
+    grid=major, grid style={gray!25},
+    legend pos=north west, legend style={font=\footnotesize},
+    tick label style={font=\footnotesize}, label style={font=\footnotesize}]
+\addplot[thick, blue] {(x/3.6)^2/(2*6.867)};
+\addlegendentry{Braking distance $v^2/(2\mu g)$, $\mu=0.7$}
+\addplot[thick, red, dashed] {x/3.6};
+\addlegendentry{Distance covered in 1~s}
+\addplot[only marks, mark=*, mark size=2pt, black] coordinates {(100,56.18) (100,27.78)};
+\node[anchor=west, font=\scriptsize] at (axis cs:102,56.18) {56.2 m};
+\node[anchor=west, font=\scriptsize] at (axis cs:102,27.78) {27.8 m};
+\end{axis}
+\end{tikzpicture}
+\captionsetup{singlelinecheck = false, format= hang, justification=justified, font=footnotesize, labelsep=space}
+\caption{Friction-limited braking distance versus distance travelled in one second of warning time. Both curves are computed from basic kinematics using the friction coefficient $\mu=0.7$ and $g=9.81$~m/s$^2$ that we also use inside PIKV; no external data is used.}
+\label{fig_intro}
+\end{figure}
+
+While working on this project we found four specific problems that keep current systems from anticipating hazards:
 \begin{enumerate}
-    \item \textbf{Absence of Counterfactual Reasoning in Perception:} Existing perception pipelines process only the observed state of the environment. No deployed system asks ``what if agent $i$ suddenly brakes?'' or ``what if the cyclist swerves left?'' in real-time, despite such counterfactual reasoning being fundamental to human anticipatory driving \cite{chen2025causal, han2025cicr}.
-    \item \textbf{Physically Unconstrained Trajectory Hypotheses:} When trajectory prediction models do generate future paths, they frequently produce kinematically impossible trajectories that violate tire friction limits, maximum steering angles, or vehicle dynamics constraints, leading to excessive false alarms \cite{zhang2026cipinn, suo2025trajectory}.
-    \item \textbf{Isolated Scene Representations:} Standard object detectors produce independent bounding boxes without modeling the causal inter-agent dependencies that determine collision dynamics. Scene graphs exist but lack causal intervention mechanisms \cite{cong2025sgprior, ahmadi2025critic}.
-    \item \textbf{Reactive Safety Intervention:} Current Advanced Driver Assistance Systems (ADAS) trigger emergency braking only when Time-to-Collision (TTC) falls below a fixed threshold, providing no graduated preemptive response based on anticipatory risk assessment \cite{zhao2024risk}.
+    \item \textbf{No counterfactual reasoning inside perception:} The perception stack describes only the observed scene. It does not ask ``what if agent $i$ brakes now?''. Causal and counterfactual ideas have been used for trajectory prediction \cite{han2025cicr, wang2025beyond} and for offline scenario generation \cite{jing2026counterscene}, but not as a per-frame safety signal.
+    \item \textbf{Physically unconstrained hypotheses:} Learned predictors can output trajectories with impossible lateral accelerations or yaw rates. Several recent works add kinematic models to fix this \cite{liao2024physics, baden2025tpk, chugh2025xtrack}, but they do it for forecasting accuracy, not for filtering risk hypotheses.
+    \item \textbf{Flat scene representations:} Detectors give independent boxes. Interaction-aware models show that only some agents actually influence each other \cite{ahmadi2025critic}, and scene graphs are a natural way to store these relations \cite{hallyburton2025neuspaper}.
+    \item \textbf{Binary safety responses:} A fixed TTC threshold gives an on/off response. There is no smooth escalation from ``keep an eye on it'' to ``brake now''.
 \end{enumerate}
 
 % 2) Give a brief intro about your proposal, in detail you can add in third section.
-To bridge these challenges, this paper presents the \textbf{Physics-Constrained Counterfactual Scene Graph Transformer (PC-CSG)}, an end-to-end architecture that unifies three individually emerging but never jointly addressed research threads: (i) dynamic scene graph construction with causal attention gating, (ii) counterfactual trajectory hypothesis generation, and (iii) physics-informed kinematic validation. From the road camera stream, PC-CSG constructs a spatio-temporal scene graph $\mathcal{G}_t = (\mathcal{V}_t, \mathcal{E}_t)$ annotated with kinematic state vectors and Time-to-Collision. A novel Counterfactual Scene Graph Attention (CSGA) mechanism injects learned ``what-if'' perturbation embeddings to generate $K=6$ counterfactual trajectory hypotheses per critical agent. Each hypothesis is validated through a differentiable Physics-Informed Kinematic Validator (PIKV) implementing a kinematic bicycle model that enforces tire friction circle constraints, maximum steering angles, yaw rate limits, and acceleration bounds. The framework computes the novel Counterfactual Risk Tensor (CRT)---a continuous anticipatory safety metric---that drives a five-level graduated preemptive intervention state machine.
+To address these, we built the \textbf{Physics-Constrained Counterfactual Scene Graph Transformer (PC-CSG)}. For every frame, PC-CSG turns tracked detections into a scene graph $\mathcal{G}_t = (\mathcal{V}_t, \mathcal{E}_t)$ whose nodes carry kinematic state and a TTC-based hazard weight. For each agent whose hazard weight is above 0.2, the Counterfactual Scene Graph Attention (CSGA) module creates $K=6$ counterfactual queries (sudden brake, hard swerve left, hard swerve right, sudden acceleration, lane departure and stationary obstacle) and scores each one with a risk head. A small decoder turns each counterfactual into a control sequence, a kinematic bicycle model rolls it out for 15 steps, and the Physics-Informed Kinematic Validator (PIKV) rejects rollouts that break the friction circle or the other vehicle limits. Only the hypotheses that survive go into the Counterfactual Risk Tensor (CRT), and the CRT value selects one of five intervention levels.
 
 % 3) Add 2-3 points highlighting your novel contribution for the proposal. See the eg given below.
-The salient contributions of this work are summarized as follows:
+The main contributions of this work are:
 \begin{enumerate}
-    \item \textbf{Counterfactual Scene Graph Attention (CSGA):} We design a causal cross-attention mechanism that generates and evaluates ``what-if'' trajectory perturbations across scene graph nodes in real-time, embedding counterfactual reasoning directly within the perception pipeline for the first time.
-    \item \textbf{Physics-Informed Kinematic Validator (PIKV) with Proof:} We formulate a differentiable kinematic bicycle model layer that hard-constrains all trajectory hypotheses to satisfy tire friction, steering, yaw rate, and acceleration limits. We provide Proposition~1 proving that PIKV eliminates all trajectories where total acceleration exceeds the Coulomb friction bound $a_{\text{total}} > \mu \cdot g$, and Proposition~2 bounding the false positive reduction rate.
-    \item \textbf{Counterfactual Risk Tensor (CRT) and Graduated Preemptive Intervention:} We derive a novel continuous safety metric that captures anticipatory risk across all agent--counterfactual pairs, establishing a five-level preemptive intervention state machine that triggers safety responses \textit{before} predicted collisions materialize, providing mean 2.84~s preemptive lead time.
+    \item \textbf{Counterfactual Scene Graph Attention (CSGA):} A compact attention module (350,594 parameters) that injects six learned ``what-if'' mode embeddings into the embeddings of critical agents and scores each hypothesis with cross-attention over the whole scene, so counterfactual reasoning runs inside the per-frame perception loop (1.57~ms on an RTX 3050 Laptop GPU).
+    \item \textbf{Physics-Informed Kinematic Validator (PIKV) with formal guarantees:} A parameter-free validation layer built on the kinematic bicycle model \cite{kong2015kinematic}. Proposition~1 proves that any hypothesis that exceeds the Coulomb friction bound $\mu g = 6.867$~m/s$^2$ at any step is removed from the CRT, and that the rollout and the checks do not depend on the choice of planar reference frame. In our validation runs, PIKV rejected 46.0\% of the generated hypotheses.
+    \item \textbf{Counterfactual Risk Tensor (CRT) with graduated intervention:} A bounded risk score in $[0,1]$ with a five-level action policy. Proposition~2 proves that PIKV filtering can never add false alarms compared with unfiltered counterfactual risk, and that the CRT rises monotonically as the TTC shrinks, so the warning level escalates without oscillating.
 \end{enumerate}
 
 % 4) Add organization of the paper as given below.
-The organization of the paper is as follows. Section~\ref{section2} provides a comprehensive literature survey of recent post-2024 studies and identifies core research gaps. Section~3 details the proposed PC-CSG architecture, mathematical formulations, algorithmic workflow, and theoretical proofs. Section~4 presents the experimental setup, latency profiling on an NVIDIA RTX 3050 GPU, ablation studies, and comparative analysis. Section~5 concludes the paper and outlines future research directions.
+The rest of the paper is organised as follows. Section~\ref{section2} reviews fifteen recent studies (2024--2026) and lists the gaps we target. Section~\ref{section3} describes the PC-CSG architecture, the equations, the algorithm and the two propositions with proofs. Section~\ref{section4} covers the dataset, the experimental setup, the latency profile, the PIKV pruning analysis, the ablation study and a comparison with related methods. Section~\ref{section5} concludes the paper and lists limitations and future work.
 
 \section{Related works} \label{section2}
 % 1) Give a brief intro about the literature survey section
-In this section, recent advances in autonomous vehicle perception, trajectory prediction, scene graph reasoning, physics-informed modeling, and counterfactual causal inference published between 2024 and 2026 are reviewed. Contemporary research has shifted from purely reactive detection toward anticipatory reasoning, structured relational representations, and physically grounded prediction. We examine fifteen representative post-2024 studies spanning these emerging frontiers.
+This section reviews recent work, published between 2024 and 2026, in four areas that PC-CSG draws on: low-latency perception, physics-informed trajectory prediction, causal and counterfactual reasoning for driving, and scene graph and risk modelling. We discuss fifteen studies, and Table~\ref{table_literature} summarises them.
 
 % 2) Discuss 2-3 lines of each work. For each work, discuss about the problem, method and results they have obtained. Totally 15 articles (published 2022-2024) has to be discussed.
-Yang et al. \cite{yang2023bevformer} proposed BEVFormer v2, an enhanced Bird's-Eye-View transformer for 3D multi-camera object detection that achieves 63.4\% NDS on nuScenes through temporal self-attention and spatial cross-attention across camera views; however, the architecture processes only the observed scene state without reasoning about counterfactual agent behaviors. Zhou and Jiang \cite{zhou2024event} conducted a comprehensive survey on deep event-based object detection for autonomous driving, highlighting that neuromorphic event cameras offer microsecond-level temporal resolution but remain limited by the absence of structured relational scene representations. Gehrig and Scaramuzza \cite{gehrig2024low} demonstrated a hybrid event- and frame-based detector achieving low-latency automotive perception at high FPS, though their system operates purely reactively without anticipatory trajectory analysis.
+\textbf{Low-latency perception.} Gehrig and Scaramuzza \cite{gehrig2024low} looked at the bandwidth--latency trade-off in automotive cameras and proposed a hybrid detector that processes frames with a CNN and events with an asynchronous graph neural network. A 20~FPS RGB camera plus an event camera reached the latency of a 5,000~FPS camera at the bandwidth of a 45~FPS camera without losing accuracy. The system is still a detector, though, and it says nothing about what detected agents may do next. Zhou and Jiang \cite{zhou2024event} surveyed deep event-based object detection for driving and pointed out that keeping both latency and model size low with sparse, asynchronous event data is still difficult. Both works make the input side faster, but neither adds any forward-looking reasoning.
 
-Zhang et al. \cite{zhang2026cipinn} introduced CI-PINN, a Physics-Informed Neural Network for self-supervised trajectory reconstruction in cut-in scenarios, demonstrating that kinematic bicycle model constraints reduce prediction error by up to 10$\times$ under severe data degradation; however, CI-PINN operates offline and does not perform real-time counterfactual reasoning. Suo et al. \cite{suo2025trajectory} proposed a physics-constrained trajectory prediction framework using wavelet reconstruction networks and kinematic bicycle models, achieving robust predictions under 80--90\% missing observations, though lacking scene graph structure and counterfactual capability. Han and Xu \cite{han2025cicr} developed a causal intervention and counterfactual reasoning (CICR) framework that uses front-door criteria and cross-attention to eliminate spurious correlations in trajectory prediction, but the method processes trajectories in isolation without physics-informed validation.
+\textbf{Physics-informed trajectory prediction.} Liao et al. \cite{liao2024physics} studied prediction when part of the observation history is missing. They used a Wavelet Reconstruction Network to fill the gaps and a kinematic bicycle model to keep the outputs physically realistic, and they reported high accuracy with up to 75\% of observations missing; the model predicts the most likely future and does not test alternative hypotheses. Long et al. \cite{long2024pinn} built a physics-informed neural network that stitches broken vehicle trajectories using kinematic priors and boundary conditions. It worked on NGSIM and HighSIM and extrapolated from low-speed training data to high-speed cases, but it is an offline reconstruction tool. Baden et al. \cite{baden2025tpk} (TPK) added class-specific interaction priors and kinematic models for vehicles, pedestrians and cyclists to a transformer predictor on Argoverse~2. They found that the kinematic layer removes infeasible trajectories at a small cost in accuracy, which is very close to what we see with PIKV. Chugh et al. \cite{chugh2025xtrack} proposed X-TRACK, an xLSTM predictor with a kinematic constraint layer that was evaluated on highD and NGSIM. Li and Westerlund \cite{li2025physvarmix} proposed PhysVarMix, which combines a variational mixture model for multi-modal futures with sector-boundary constraints and MPC-based smoothing. All five works use physics to make forecasts more realistic, but none of them uses physics to decide which risk hypotheses should be trusted.
 
-Ahmadi et al. \cite{ahmadi2025critic} introduced CRiTIC, a causal attention gating mechanism that identifies true inter-agent relationships and filters non-causal information, improving prediction robustness by up to 54\%; however, CRiTIC does not generate counterfactual hypotheses or validate physical plausibility. Cong et al. \cite{cong2025sgprior} proposed SGPrior, utilizing scene graphs for consistency assertion to verify autonomous driving system outputs via normalized Hamming distances; their work demonstrates graph-based verification but operates post-hoc rather than as a real-time anticipatory mechanism. Chen et al. \cite{chen2025causal} presented a systematic survey on causal reasoning for autonomous driving, identifying that online scalable causal intervention in end-to-end models remains a major open challenge.
+\textbf{Causal and counterfactual reasoning.} Ahmadi et al. \cite{ahmadi2025critic} (CRiTIC) used a causal discovery network to find which agents really influence each other and a causal attention gating mechanism to filter the rest. Robustness to non-causal perturbations improved by up to 54\% and cross-domain performance by up to 29\%. CRiTIC removes irrelevant agents but does not generate counterfactual futures. Han and Xu \cite{han2025cicr} proposed CICR for pedestrian trajectories, using the front-door criterion to remove confounding bias and a decoder that simulates hypothetical scenarios. They reported average ADE/FDE of 0.17/0.24 on ETH/UCY and 7.13/10.29 on SDD; there is no vehicle-dynamics check on the generated futures. Wang et al. \cite{wang2025beyond} split the driving scene into spatial and temporal parts to find and reduce spurious correlations, and outperformed earlier methods in RMSE and FDE on five datasets (ApolloScape, nuScenes, NGSIM, HighD and MoCAD). Jing et al. \cite{jing2026counterscene} (CounterScene) applied counterfactual interventions to the causally critical agent inside a BEV world model to create safety-critical test scenes. On nuScenes they raised the long-horizon collision rate from 12.3\% to 22.7\% over the strongest baseline while improving realism (ADE 1.88 vs.\ 2.09). This is close to our idea of ``what-if'' perturbations, but it is used for offline testing, not online warning. Cui et al. \cite{cui2025cot} surveyed chain-of-thought reasoning for autonomous driving and argued that step-by-step reasoning helps in complex scenes, while noting open problems in real-time deployment.
 
-Zhao et al. \cite{zhao2024risk} developed a risk-aware intelligent safety assistance framework modeling driver fatigue state transitions via Hidden Markov Models; however, their risk assessment is decoupled from anticipatory trajectory analysis. Yang et al. \cite{yang2025risk} presented a temporal self-attention mechanism coupled with dynamic collision mitigation, achieving 96.8\% detection accuracy on driving simulator benchmarks, though their risk index remains reactive rather than counterfactual. Shu et al. \cite{shu2025physguard} introduced PhysGuard, embedding kinematic constraint layers into trajectory prediction models to ensure physically valid outputs, though without scene graph structure or counterfactual reasoning. Kim et al. \cite{kim2025scenariogen} proposed a counterfactual scenario generation pipeline for safety validation that synthesizes ``what-if'' driving scenarios in simulation, but the method requires offline processing and cannot operate in real-time perception loops.
+\textbf{Scene graphs and risk modelling.} Hallyburton and Pajic \cite{hallyburton2025neuspaper} proposed NeuSPaPer, which pairs object detection with scene graph generation so that symbolic checks can sit on top of neural perception; their experiments indicate that scene graphs can link low-level perception and high-level reasoning. Wu et al. \cite{wu2024riskfield} predicted the regions that nearby vehicles may reach, built a risk potential field from those predictions at every future step and added it to a model predictive contouring controller in CARLA. Ning et al. \cite{ning2025strap} (STRAP) fused a risk potential field into spatio-temporal features with attention and used a risk-scaled loss; average prediction error went down by 4.8\% on NGSIM and 31.2\% on HighD. These risk models are useful, but their risk is built from the most likely future rather than from a set of physically checked alternatives.
 
-Park et al. \cite{park2025riskfield} formulated risk potential fields for trajectory prediction that model potential dangers from surrounding agents, providing risk-informed prediction but without formal physics constraints or counterfactual hypothesis testing. Liao et al. \cite{liao2025temporal} developed a temporal scene graph reasoning framework with neuro-symbolic executors for exact spatial operations, demonstrating improved accuracy on driving QA benchmarks; however, their method does not integrate trajectory prediction or physics-informed validation.
-
-A comprehensive comparative summary of these benchmark post-2024 studies is presented in Table~\ref{table_literature}.
+A comparative summary of these studies is presented in Table~\ref{table_literature}.
 
 \begin{table}[H]
-\caption{Comprehensive comparative analysis of recent autonomous vehicle perception, trajectory prediction, and safety reasoning studies published between 2024 and 2026.}
+\caption{Summary of the fifteen recent studies reviewed (2024--2026). Results are as reported by the original authors.}
 \centering
 \label{table_literature}
 \adjustbox{max width=\linewidth}{
-\begin{tabular}{l c l l c L{5.5cm}}
+\begin{tabular}{l c L{4.0cm} l L{4.0cm} L{5.0cm}}
 \hline
-\textbf{Author \& Ref.} & \textbf{Year} & \textbf{Core Methodology} & \textbf{Domain} & \textbf{Metric} & \textbf{Primary Identified Limitations} \\
+\textbf{Author \& Ref.} & \textbf{Year} & \textbf{Core Methodology} & \textbf{Domain} & \textbf{Reported Result} & \textbf{Limitation for Our Task} \\
 \hline
-Yang et al. \cite{yang2023bevformer} & 2023 & BEVFormer v2 (BEV Transformer) & 3D Detection & 63.4\% NDS & No counterfactual reasoning; reactive perception only. \\
-Zhou \& Jiang \cite{zhou2024event} & 2024 & Event-Based Deep Detection Survey & Object Detection & Survey & No scene graph structure; no anticipatory capability. \\
-Gehrig \& Scaramuzza \cite{gehrig2024low} & 2024 & Hybrid Event-Frame Detector & Low-Latency Det. & 85+ FPS & Purely reactive; no trajectory prediction or risk analysis. \\
-Zhang et al. \cite{zhang2026cipinn} & 2026 & CI-PINN (Physics-Informed NN) & Trajectory Recon. & 10$\times$ error reduction & Offline only; no scene graphs; no counterfactual modes. \\
-Suo et al. \cite{suo2025trajectory} & 2025 & Wavelet + Kinematic Bicycle & Traj. Prediction & Robust under 90\% missing & No scene graph; no counterfactual reasoning capability. \\
-Han \& Xu \cite{han2025cicr} & 2025 & CICR (Counterfactual Intervention) & Traj. Prediction & 54\% robustness gain & No physics validation; processes trajectories in isolation. \\
-Ahmadi et al. \cite{ahmadi2025critic} & 2025 & CRiTIC (Causal Attention Gating) & Interaction Model & 54\% improvement & No counterfactual generation; no physics constraints. \\
-Cong et al. \cite{cong2025sgprior} & 2024 & SGPrior (Scene Graph Verification) & ADS Verification & Consistency check & Post-hoc only; not real-time anticipatory perception. \\
-Chen et al. \cite{chen2025causal} & 2025 & Causal Reasoning Survey for AD & Survey & Survey & Identifies online causal intervention as open challenge. \\
-Zhao et al. \cite{zhao2024risk} & 2024 & Risk-Aware Safety (HMM) & Driver Safety & 93.7\% Acc. & Risk decoupled from anticipatory trajectory analysis. \\
-Yang et al. \cite{yang2025risk} & 2025 & Temporal Self-Attn + Collision & Driver Monitoring & 96.8\% Acc. & Reactive risk; no counterfactual ``what-if'' reasoning. \\
-Shu et al. \cite{shu2025physguard} & 2024 & PhysGuard (Kinematic Constraints) & Traj. Prediction & Valid trajectories & No scene graph; no counterfactual hypothesis testing. \\
-Kim et al. \cite{kim2025scenariogen} & 2025 & Counterfactual Scenario Generation & Safety Validation & Offline scenarios & Offline only; cannot operate in real-time perception. \\
-Park et al. \cite{park2025riskfield} & 2024 & Risk Potential Fields & Traj. Prediction & Risk-informed & No formal physics constraints; no counterfactual testing. \\
-Liao et al. \cite{liao2025temporal} & 2024 & Temporal Scene Graph Reasoning & Scene Understanding & Improved QA acc. & No trajectory prediction; no physics-informed validation. \\
+Gehrig \& Scaramuzza \cite{gehrig2024low} & 2024 & Hybrid frame + event detector (CNN + asynchronous GNN) & Detection & Latency of a 5,000~FPS camera at 45~FPS bandwidth & Reactive detection only; no future reasoning. \\
+Zhou \& Jiang \cite{zhou2024event} & 2024 & Survey of deep event-based detection & Detection & Survey & No relational or anticipatory component. \\
+Liao et al. \cite{liao2024physics} & 2024 & Wavelet reconstruction + kinematic bicycle model & Traj. prediction & Accurate with up to 75\% missing observations & Single most-likely future; no counterfactuals. \\
+Long et al. \cite{long2024pinn} & 2024 & PINN with kinematic priors for trajectory stitching & Traj. reconstruction & Better stitching on NGSIM / HighSIM & Offline; no risk output. \\
+Baden et al. \cite{baden2025tpk} & 2025 & Interaction + kinematic priors in a transformer (TPK) & Traj. prediction & Removes infeasible trajectories (Argoverse~2) & Physics used for forecasting, not risk filtering. \\
+Chugh et al. \cite{chugh2025xtrack} & 2025 & xLSTM with kinematic constraint layer (X-TRACK) & Traj. prediction & State of the art on highD & No scene graph; no counterfactuals. \\
+Li \& Westerlund \cite{li2025physvarmix} & 2025 & Variational mixture + sector constraints + MPC smoothing & Traj. prediction & Better than baselines on two benchmarks & Multi-modal but not intervention-based. \\
+Ahmadi et al. \cite{ahmadi2025critic} & 2025 & Causal discovery + causal attention gating (CRiTIC) & Traj. prediction & Up to 54\% robustness, 29\% cross-domain gain & No counterfactual futures; no physics check. \\
+Han \& Xu \cite{han2025cicr} & 2025 & Front-door causal fusion + counterfactual decoder (CICR) & Pedestrian traj. & ADE/FDE 0.17/0.24 (ETH/UCY) & No vehicle-dynamics validation. \\
+Wang et al. \cite{wang2025beyond} & 2025 & Spatial/temporal causal decomposition & Traj. prediction & Better RMSE/FDE on 5 datasets & Prediction only; no safety policy. \\
+Jing et al. \cite{jing2026counterscene} & 2026 & Counterfactual intervention in BEV world model & Scenario generation & Collision rate 12.3\%$\rightarrow$22.7\% & Offline test generation, not online warning. \\
+Cui et al. \cite{cui2025cot} & 2025 & Survey of chain-of-thought reasoning & Survey & Survey & Real-time reasoning listed as open problem. \\
+Hallyburton \& Pajic \cite{hallyburton2025neuspaper} & 2025 & Joint detection + scene graph generation & Perception & Scene graphs link perception and reasoning & No trajectory or risk hypotheses. \\
+Wu et al. \cite{wu2024riskfield} & 2024 & Reachable-region prediction + risk potential field + MPCC & Planning & Safe and efficient driving in CARLA & Risk from likely futures; no physics filter. \\
+Ning et al. \cite{ning2025strap} & 2025 & Risk-field attention fusion (STRAP) & Traj. prediction & $-$4.8\% (NGSIM), $-$31.2\% (HighD) error & No counterfactual or kinematic validation. \\
 \hline
 \end{tabular}
 }
 \end{table}
 
 % 3) List out the limitations (4-5 points) which you have observed from the above discussed existing works
-Limitations of the existing methods are,
+After going through these works, we see the following limitations:
 \begin{itemize}
-    \item \textbf{No Unified Counterfactual--Physics--Scene Graph Architecture:} Counterfactual reasoning, physics-informed constraints, and scene graph attention have each been explored individually, but no existing work unifies all three into a single real-time architecture for anticipatory anomaly detection.
-    \item \textbf{Reactive Safety Paradigm:} All reviewed perception systems trigger interventions only after hazards are directly observed, providing no preemptive lead time for graduated safety responses.
-    \item \textbf{Physically Unconstrained Hypotheses:} Trajectory prediction models that lack kinematic bicycle model constraints generate impossible maneuvers, inflating false positive rates by over 40\%.
-    \item \textbf{Absence of Causal Inter-Agent Gating:} Standard attention mechanisms attend to all agent pairs equally without modeling which interactions are causally relevant, wasting compute and introducing noise from non-causal agents.
+    \item \textbf{Counterfactuals are used offline or only for accuracy:} Counterfactual generation is used for scenario testing \cite{jing2026counterscene} or for better forecasts \cite{han2025cicr, wang2025beyond}, but not as a per-frame safety signal next to the perception stack.
+    \item \textbf{Physics is not used to filter risk:} Kinematic layers \cite{liao2024physics, baden2025tpk, chugh2025xtrack, li2025physvarmix} make forecasts realistic, but no work uses them to throw away impossible \emph{risk} hypotheses before raising an alarm.
+    \item \textbf{Interaction structure and hypotheses are handled separately:} Causal gating \cite{ahmadi2025critic} and scene graphs \cite{hallyburton2025neuspaper} identify which agents matter, but they are not combined with explicit ``what-if'' hypotheses for those agents.
+    \item \textbf{Risk outputs are not mapped to graded actions:} Risk fields \cite{wu2024riskfield, ning2025strap} feed planners or losses, but they are not turned into a bounded score with graded driver-assistance levels.
 \end{itemize}
 
-% 4) Discuss in one paragraph about which limitations you are going to solve in your proposal. 
-The proposed PC-CSG framework directly overcomes these structural gaps by introducing the first end-to-end architecture that unifies counterfactual scene graph attention with physics-informed kinematic validation. The CSGA mechanism identifies causally relevant inter-agent dependencies and generates physically motivated ``what-if'' perturbations, while the PIKV layer hard-constrains all hypothesized trajectories to kinematic feasibility. The resulting Counterfactual Risk Tensor enables preemptive graduated intervention with demonstrated 2.84~s mean lead time before predicted collisions.
+% 4) Discuss in one paragraph about which limitations you are going to solve in your proposal.
+PC-CSG tries to close these gaps in one pipeline. The scene graph and hazard weights pick out the agents that matter, CSGA generates and scores six counterfactual hypotheses for each of them, PIKV removes the ones a real car could not drive, and the CRT turns what is left into one number in $[0,1]$ with five graded actions. The whole pipeline is small enough to run at about 150~FPS on a laptop GPU.
 
-\section{Proposed Method}
-% 1) Give a brief introduction about your proposal. 
-The PC-CSG framework operates across four interconnected stages: (i) dynamic spatio-temporal scene graph construction with kinematic-annotated nodes, (ii) Counterfactual Scene Graph Attention (CSGA) with causal gating and ``what-if'' perturbation injection, (iii) Physics-Informed Kinematic Validation (PIKV) via differentiable bicycle model constraints, and (iv) Counterfactual Risk Tensor (CRT) computation for graduated preemptive intervention.
+\section{Proposed Method} \label{section3}
+% 1) Give a brief introduction about your proposal.
+PC-CSG has six stages: (i) detection and tracking, (ii) scene graph construction with TTC-based hazard weights, (iii) Counterfactual Scene Graph Attention, (iv) control decoding and kinematic bicycle rollout, (v) Physics-Informed Kinematic Validation and (vi) Counterfactual Risk Tensor computation with the intervention arbiter. Figure~\ref{arch} shows how data moves between these stages, and Table~\ref{table_arch} lists the main hyperparameters and parameter counts.
 
 % 2) Add the architecture diagram. Find the sample below.
 \begin{figure}[H]
-	\centering
-	\includegraphics[width=1.0\linewidth]{images/architecture.jpeg}
-	\captionsetup{singlelinecheck = false, format= hang, justification=justified, font=footnotesize, labelsep=space}
-	\caption{Overall system architecture of the Physics-Constrained Counterfactual Scene Graph Transformer (PC-CSG): road camera detections are structured into a dynamic scene graph, processed through Counterfactual Scene Graph Attention (CSGA) with causal gating, validated by the Physics-Informed Kinematic Validator (PIKV), and aggregated into the Counterfactual Risk Tensor (CRT) for five-level preemptive intervention.}
-	\label{arch}
+\centering
+\adjustbox{max width=\linewidth}{
+\begin{tikzpicture}[
+    box/.style={draw, rounded corners=3pt, align=center, text width=4.1cm, minimum height=2.6cm, font=\scriptsize, fill=#1},
+    arr/.style={-{Stealth[length=2.2mm]}, thick},
+    node distance=0.9cm and 0.8cm]
+\node[box=blue!8] (cam) {\textbf{1. Road camera + tracker}\\[2pt] Object detector (YOLOv8n) and multi-object tracker give each agent its class, box and kinematic state $[x, y, \dot{x}, \dot{y}, \ddot{x}, \ddot{y}, \psi]$};
+\node[box=cyan!8, right=of cam] (sg) {\textbf{2. Scene graph $\mathcal{G}_t$}\\[2pt] Nodes $v_i^t \in \mathbb{R}^{12}$, edges $e_{ij} \in \mathbb{R}^{6}$ within $r_{\text{prox}} = 50$~m; CPA-based TTC and hazard weight $H(v_i^t)$};
+\node[box=green!8, right=of sg] (csga) {\textbf{3. CSGA}\\[2pt] Node/edge projection ($D=128$), causal gate head $G_{ij}$, scene self-attention, $K=6$ mode embeddings $\mathbf{z}_{m_k}$, cross-attention and risk head $R_{i,k}$};
+\node[box=yellow!12, below=of csga] (dec) {\textbf{4. Decoder + bicycle model}\\[2pt] Controls $(a_t, \delta_t)$ = learned residual + mode prior; rollout with $L=2.7$~m, $\Delta t = 1/30$~s, $H=15$ steps};
+\node[box=orange!12, left=of dec] (pikv) {\textbf{5. PIKV}\\[2pt] Friction circle $\sqrt{a_{\text{lon}}^2 + a_{\text{lat}}^2} \le \mu g$, yaw rate $\le 1.2$~rad/s, $a_{\text{lat}} \le 6$~m/s$^2$, $|a| \le 8$~m/s$^2$, $v \le 90$~m/s $\Rightarrow V_{i,k}, \nu_{i,k}$};
+\node[box=red!10, left=of pikv] (crt) {\textbf{6. CRT + arbiter}\\[2pt] $\text{CRT}(t) = \max_{i,k} R_{i,k} V_{i,k} H(v_i^t)$\\ mapped to Levels 0--4 (Nominal $\rightarrow$ AEB + MRM)};
+\draw[arr] (cam) -- (sg);
+\draw[arr] (sg) -- (csga);
+\draw[arr] (csga) -- node[right, font=\scriptsize]{$\mathbf{o}_{i,k}$} (dec);
+\draw[arr] (dec) -- node[above, font=\scriptsize]{traj.} (pikv);
+\draw[arr] (pikv) -- node[above, font=\scriptsize]{$V_{i,k}$} (crt);
+\draw[arr, dashed, gray] (sg.south) -- ++(0,-0.45) -| node[pos=0.25, above, font=\scriptsize, black]{$H(v_i^t)$} (crt.north);
+\end{tikzpicture}
+}
+\captionsetup{singlelinecheck = false, format= hang, justification=justified, font=footnotesize, labelsep=space}
+\caption{Overall architecture of PC-CSG. Tracked detections become a scene graph with TTC-based hazard weights (stage 2). CSGA generates and scores six counterfactual hypotheses for each critical agent (stage 3). Each hypothesis is rolled out with a kinematic bicycle model (stage 4) and checked by PIKV (stage 5), and the CRT combines risk, validity and hazard into a single score that selects the intervention level (stage 6). The dashed arrow carries the hazard weights directly to the CRT.}
+\label{arch}
 \end{figure}
+
+\begin{table}[H]
+\caption{PC-CSG hyperparameters and trainable parameter counts (from the released implementation).}
+\centering
+\label{table_arch}
+\adjustbox{max width=\linewidth}{
+\begin{tabular}{l|c|l}
+\hline
+\textbf{Component / Setting} & \textbf{Value} & \textbf{Notes} \\
+\hline
+CSGA module & 350,594 params (94.2\%) & Projections, causal gate head, self-attn, cross-attn, risk head \\
+Counterfactual trajectory decoder & 20,382 params (5.5\%) & $128 \rightarrow 128 \rightarrow 2H$ MLP with GELU \\
+Initial state extractor & 1,092 params (0.3\%) & $12 \rightarrow 64 \rightarrow 4$ MLP, outputs $[x, y, v, \theta]$ \\
+Bicycle model + PIKV & 0 params & Closed-form equations and threshold checks \\
+\textbf{Total} & \textbf{372,068 params} & All trainable parameters are in the three learned modules \\
+\hline
+Embedding dim. $D$ / heads / FFN dim. & 128 / 4 / 512 & Head dim. 32, dropout 0.1 \\
+Counterfactual modes $K$ & 6 & Brake, swerve L, swerve R, accel., lane departure, stationary \\
+Horizon $H$, step $\Delta t$ & 15, 1/30~s & 0.5~s rollout at 30~FPS \\
+Wheelbase $L$, $\delta_{\max}$ & 2.7~m, 0.6~rad ($34.4^\circ$) & $l_r / L = 0.5$ \\
+$a_{\max}$ / $a_{\text{brake,max}}$ / $a_{\text{lat,max}}$ & 8.0 / 10.0 / 6.0~m/s$^2$ & Clamped in rollout, checked in PIKV \\
+$\dot{\psi}_{\max}$, $\mu$, $g$ & 1.2~rad/s, 0.70, 9.81~m/s$^2$ & $\mu g = 6.867$~m/s$^2$ \\
+$\tau_{\text{crit}}$, $\lambda_{\text{scale}}$, CPA corridor & 3.0~s, 0.5~s, 2.5~m & Hazard sigmoid and TTC \\
+\hline
+\end{tabular}
+}
+\end{table}
 
 % 3) Discuss in detail about the architecture diagram
 \subsection{Dynamic Spatio-Temporal Scene Graph ($\mathcal{G}_t$)}
-At frame $t$, the road camera detects $N_t$ active traffic participants forming node set $\mathcal{V}_t = \{v_1^t, v_2^t, \dots, v_{N_t}^t\}$. Each node $v_i^t \in \mathbb{R}^{12}$ is represented by a kinematic-annotated feature vector:
+At frame $t$ the detector and tracker give $N_t$ traffic participants (we keep at most 32). They form the node set $\mathcal{V}_t = \{v_1^t, \dots, v_{N_t}^t\}$, and each node is a 12-dimensional feature vector:
 \begin{equation}
-    v_i^t = \left[c_i, \; x_i, \; y_i, \; w_i, \; h_i, \; \dot{x}_i, \; \dot{y}_i, \; \ddot{x}_i, \; \ddot{y}_i, \; \psi_i, \; TTC_i(t), \; s_i\right]^T
+    v_i^t = \left[c_i, \; x_i, \; y_i, \; w_i, \; h_i, \; \dot{x}_i, \; \dot{y}_i, \; \ddot{x}_i, \; \ddot{y}_i, \; \psi_i, \; \text{TTC}_i(t), \; d_i\right]^T
     \label{eq_node}
 \end{equation}
-where $c_i$ is the semantic object category, $(x_i, y_i, w_i, h_i)$ are normalized bounding box coordinates, $(\dot{x}_i, \dot{y}_i)$ and $(\ddot{x}_i, \ddot{y}_i)$ denote velocity and acceleration, $\psi_i$ is heading angle, $TTC_i(t)$ is Time-to-Collision, and $s_i = \sqrt{\dot{x}_i^2 + \dot{y}_i^2}$ is scalar speed.
+where $c_i$ is the object class (one of 8: vehicle, pedestrian, cyclist, truck, bus, barrier, cone, unknown), $(x_i, y_i)$ is position, $(w_i, h_i)$ is box size, $(\dot{x}_i, \dot{y}_i)$ and $(\ddot{x}_i, \ddot{y}_i)$ are velocity and acceleration, $\psi_i$ is heading, $\text{TTC}_i(t)$ is the time-to-collision with the ego vehicle and $d_i$ is the distance to the ego vehicle.
 
-Edges $\mathcal{E}_t$ connect node pairs within proximity radius $r_{\text{prox}} = 50$~m. Each edge $e_{ij} \in \mathbb{R}^6$ carries relative kinematic features:
+A directed edge $(i,j)$ is added whenever two agents are within $r_{\text{prox}} = 50$~m of each other. Each edge carries the relative state:
 \begin{equation}
     e_{ij} = \left[\Delta x_{ij}, \; \Delta y_{ij}, \; \Delta \dot{x}_{ij}, \; \Delta \dot{y}_{ij}, \; d_{ij}, \; \phi_{ij}\right]^T
     \label{eq_edge}
 \end{equation}
-where $d_{ij}$ is Euclidean distance and $\phi_{ij} = \text{atan2}(\Delta y_{ij}, \Delta x_{ij})$ is bearing angle.
+where $d_{ij}$ is the Euclidean distance and $\phi_{ij} = \text{atan2}(\Delta y_{ij}, \Delta x_{ij})$ is the bearing.
 
-Each node is assigned an intrinsic hazard score $H(v_i^t) \in [0, 1]$ via sigmoid TTC mapping:
+\textbf{TTC from the closest point of approach.} A plain distance-over-closing-speed TTC gives false alarms for cars in the next lane, so we compute it from the closest point of approach (CPA). With relative position $\Delta\mathbf{p}$ and relative velocity $\Delta\mathbf{v}$ of agent $i$ with respect to the ego vehicle,
 \begin{equation}
-    H(v_i^t) = \frac{1}{1 + \exp\left(\frac{TTC_i(t) - \tau_{\text{crit}}}{\lambda_{\text{scale}}}\right)} \cdot \mathbb{I}\left(TTC_i(t) > 0\right)
+    t_{\text{cpa}} = -\frac{\Delta\mathbf{p} \cdot \Delta\mathbf{v}}{\|\Delta\mathbf{v}\|^2}, \qquad
+    \text{TTC}_i(t) = \begin{cases}
+    t_{\text{cpa}} & \text{if } t_{\text{cpa}} > 0 \text{ and } \|\Delta\mathbf{p} + \Delta\mathbf{v}\, t_{\text{cpa}}\| \le 2.5~\text{m} \\
+    \infty & \text{otherwise}
+    \end{cases}
+    \label{eq_ttc}
+\end{equation}
+So an agent only gets a finite TTC if it is closing in and its path passes within a 2.5~m collision corridor.
+
+\textbf{Hazard weight.} Every node gets a hazard score $H(v_i^t) \in [0,1]$ through a sigmoid on TTC:
+\begin{equation}
+    H(v_i^t) = \frac{1}{1 + \exp\left(\frac{\text{TTC}_i(t) - \tau_{\text{crit}}}{\lambda_{\text{scale}}}\right)} \cdot \mathbb{I}\left(0 < \text{TTC}_i(t) < \infty\right)
     \label{eq_hazard}
 \end{equation}
-with critical threshold $\tau_{\text{crit}} = 3.0$~s and scaling $\lambda_{\text{scale}} = 0.5$.
+with $\tau_{\text{crit}} = 3.0$~s and $\lambda_{\text{scale}} = 0.5$~s. $H$ equals 0.5 at $\text{TTC} = 3$~s and gets close to 1 as TTC goes to zero. Agents with $H(v_i^t) > 0.2$ are marked \emph{critical}. Solving Eq.~(\ref{eq_hazard}) for $H = 0.2$ gives $\text{TTC} = \tau_{\text{crit}} + \lambda_{\text{scale}} \ln 4 \approx 3.69$~s, so only agents expected to come within the collision corridor in less than about 3.7~s get counterfactual hypotheses.
 
 \subsection{Counterfactual Scene Graph Attention (CSGA)}
-The CSGA mechanism operates in three sub-stages: causal gating, counterfactual query injection, and per-scenario risk assessment.
+CSGA takes the raw node and edge features and outputs one risk value per (critical agent, counterfactual mode) pair. It works in three steps.
 
-\subsubsection{Causal Attention Gating}
-Standard multi-head attention attends to all node pairs equally, including non-causal interactions (e.g., a vehicle three lanes away). We introduce a learnable causal gate $G_{ij} \in [0, 1]$ that selectively filters non-causal edges:
+\subsubsection{Projection, Causal Gate Head and Scene Self-Attention}
+Node features are projected to $\mathbf{h}_i = \text{GELU}(\text{LN}(\mathbf{W}_n v_i^t + \mathbf{b}_n)) \in \mathbb{R}^{D}$ with $D = 128$, and edge features to $\mathbf{e}_{ij} = \mathbf{W}_e e_{ij} + \mathbf{b}_e \in \mathbb{R}^{D}$. A causal gate head scores how relevant each edge is:
 \begin{equation}
-    G_{ij} = \sigma\left(\mathbf{W}_g \left[\mathbf{h}_i \| \mathbf{h}_j \| \mathbf{e}_{ij}\right] + b_g\right)
+    G_{ij} = \sigma\left(\mathbf{w}_2^\top \, \text{ReLU}\left(\mathbf{W}_1 \left[\mathbf{h}_i \| \mathbf{h}_j \| \mathbf{e}_{ij}\right] + \mathbf{b}_1\right) + b_2\right) \in [0, 1]
     \label{eq_gate}
 \end{equation}
-where $\mathbf{h}_i, \mathbf{h}_j \in \mathbb{R}^D$ are projected node embeddings, $\mathbf{e}_{ij} \in \mathbb{R}^D$ is the projected edge feature, $\|$ denotes concatenation, and $\sigma$ is the sigmoid function. The gated attention weight is:
+where $\|$ is concatenation and $\mathbf{W}_1 \in \mathbb{R}^{64 \times 3D}$. The intended use of the gate, following the causal attention gating idea of CRiTIC \cite{ahmadi2025critic}, is to rescale attention weights as
 \begin{equation}
-    \tilde{\alpha}_{ij} = G_{ij} \cdot \alpha_{ij}
+    \tilde{\alpha}_{ij} = G_{ij} \cdot \alpha_{ij}.
     \label{eq_gated_attn}
 \end{equation}
+We want to be clear about the state of the code here. In the version evaluated in this paper, $G_{ij}$ is computed and returned as an output, but it is not yet multiplied into the scene self-attention weights. The node embeddings go through one standard 4-head self-attention block with a residual connection, LayerNorm and a feed-forward layer of width 512 \cite{vaswani2017attention}. This matters for the ablation in Section~\ref{section4}, and wiring Eq.~(\ref{eq_gated_attn}) into the attention is on our list of fixes.
 
 \subsubsection{Counterfactual Query Injection}
-For each critical agent ($H(v_i^t) > 0.2$), we generate $K = 6$ counterfactual query perturbations corresponding to physically motivated ``what-if'' scenarios:
+For each agent we create $K = 6$ counterfactual queries, one for each mode in
 \begin{equation}
-    \mathcal{M} = \{\text{sudden\_brake}, \; \text{hard\_swerve\_left}, \; \text{hard\_swerve\_right}, \; \text{sudden\_accel}, \; \text{lane\_departure}, \; \text{stationary}\}
+    \mathcal{M} = \{\text{sudden\_brake}, \; \text{hard\_swerve\_left}, \; \text{hard\_swerve\_right}, \; \text{sudden\_accel}, \; \text{lane\_departure}, \; \text{stationary}\}.
     \label{eq_modes}
 \end{equation}
-
-Each mode $m_k \in \mathcal{M}$ is associated with a learnable embedding $\mathbf{z}_{m_k} \in \mathbb{R}^D$. The counterfactual query for agent $i$ under mode $k$ is:
+Each mode $m_k$ has a learnable embedding $\mathbf{z}_{m_k} \in \mathbb{R}^D$. The counterfactual query of agent $i$ under mode $k$ is the agent's own embedding plus a learned perturbation, applied only to critical agents:
 \begin{equation}
     \mathbf{q}_{i,k}^{\text{cf}} = \mathbf{h}_i + f_{\text{pert}}\left(\left[\mathbf{h}_i \| \mathbf{z}_{m_k}\right]\right) \cdot \mathbb{I}\left(H(v_i^t) > 0.2\right)
     \label{eq_cf_query}
 \end{equation}
-where $f_{\text{pert}}: \mathbb{R}^{2D} \to \mathbb{R}^D$ is a two-layer MLP with GELU activation.
+where $f_{\text{pert}}: \mathbb{R}^{2D} \to \mathbb{R}^D$ is a two-layer MLP with GELU.
 
-\subsubsection{Counterfactual Cross-Attention and Risk Assessment}
-Each counterfactual query $\mathbf{q}_{i,k}^{\text{cf}}$ attends to the full scene context via multi-head cross-attention:
+\subsubsection{Counterfactual Cross-Attention and Risk Head}
+For agent $i$, the six queries attend over all scene embeddings $\mathbf{H} = [\mathbf{h}_1, \dots, \mathbf{h}_N]$ with a 4-head cross-attention layer:
 \begin{equation}
-    \mathbf{o}_{i,k} = \text{CrossAttn}\left(\mathbf{q}_{i,k}^{\text{cf}}, \; \mathbf{H}, \; \mathbf{H}\right) + \mathbf{q}_{i,k}^{\text{cf}}
+    \mathbf{o}_{i,k} = \text{LN}\left(\mathbf{q}_{i,k}^{\text{cf}} + \text{CrossAttn}\left(\mathbf{q}_{i,k}^{\text{cf}}, \; \mathbf{H}, \; \mathbf{H}\right)\right)
     \label{eq_cf_attn}
 \end{equation}
-where $\mathbf{H} = [\mathbf{h}_1, \dots, \mathbf{h}_N]$ is the scene context. A risk assessment head maps each counterfactual output to a risk logit:
+A risk head turns each output into a risk value, which is set to zero for non-critical agents:
 \begin{equation}
-    R_{i,k}(t) = \sigma\left(\mathbf{W}_r \cdot \text{GELU}\left(\mathbf{W}_r' \cdot \mathbf{o}_{i,k}\right)\right) \in [0, 1]
+    R_{i,k}(t) = \sigma\left(\mathbf{W}_r \, \text{GELU}\left(\mathbf{W}_r' \, \mathbf{o}_{i,k}\right)\right) \cdot \mathbb{I}\left(H(v_i^t) > 0.2\right) \in [0, 1]
     \label{eq_risk_logit}
 \end{equation}
 
-\subsection{Physics-Informed Kinematic Validator (PIKV)}
-The PIKV implements a differentiable kinematic bicycle model that validates each counterfactual trajectory hypothesis against physical constraints.
+\subsection{Trajectory Decoding and Physics-Informed Kinematic Validator (PIKV)}
+\subsubsection{Control Decoding}
+Each counterfactual embedding $\mathbf{o}_{i,k}$ is decoded into $H = 15$ control pairs $(a_t, \delta_t)$, i.e.\ acceleration and steering angle. The decoder output is a residual added to a fixed prior for each mode, so that every mode starts from a sensible manoeuvre:
+\begin{equation}
+    [a_t, \delta_t]_{i,k} = f_{\text{dec}}(\mathbf{o}_{i,k})_t + \mathbf{p}_{k}, \quad
+    \mathbf{p}_k \in \left\{(-5, 0), (0, 0.45), (0, -0.45), (4, 0), (0, 0.15), (-7.5, 0)\right\}
+    \label{eq_prior}
+\end{equation}
+in units of (m/s$^2$, rad), listed in the order of Eq.~(\ref{eq_modes}). A second small MLP maps the raw node features to the initial state $\mathbf{s}_0 = [x_0, y_0, v_0, \theta_0]^T$.
 
-\subsubsection{Kinematic Bicycle Model}
-Given initial state $\mathbf{s}_0 = [x_0, y_0, v_0, \theta_0]^T$ and control sequence $\{(a_t, \delta_t)\}_{t=1}^{H}$ (acceleration, steering angle), the bicycle model propagates:
+\subsubsection{Kinematic Bicycle Model Rollout}
+Controls are first clamped to $a_t \in [-10, 8]$~m/s$^2$ and $|\delta_t| \le 0.6$~rad. The rollout follows the kinematic bicycle model \cite{kong2015kinematic}, with semi-implicit Euler steps and a friction-circle speed correction:
 \begin{align}
-    \beta_t &= \arctan\left(\frac{l_r}{L} \tan(\delta_t)\right) \label{eq_slip} \\
-    x_{t+1} &= x_t + v_t \cos(\theta_t + \beta_t) \cdot \Delta t \label{eq_x} \\
-    y_{t+1} &= y_t + v_t \sin(\theta_t + \beta_t) \cdot \Delta t \label{eq_y} \\
-    \theta_{t+1} &= \theta_t + \frac{v_t}{L} \sin(\beta_t) \cdot \Delta t \label{eq_theta} \\
-    v_{t+1} &= \max\left(0, \; v_t + a_t \cdot \Delta t\right) \label{eq_v}
+    \beta_t &= \arctan\left(\frac{l_r}{L} \tan \delta_t\right) \label{eq_slip} \\
+    \tilde{v}_{t} &= \max\left(0, \; v_t + a_t \Delta t\right), \qquad a^{\text{lat}}_t = \tilde{v}_t^{\,2} \tan(\delta_t) / L \label{eq_v} \\
+    v_{t+1} &= \tilde{v}_t \cdot \min\left(1, \; \frac{\mu g}{\sqrt{a_t^2 + (a^{\text{lat}}_t)^2}}\right) \label{eq_vfric} \\
+    \omega_t &= \text{clip}\left(\frac{v_{t+1}}{L} \sin \beta_t, \; -\dot{\psi}_{\max}, \; \dot{\psi}_{\max}\right) \label{eq_yaw} \\
+    x_{t+1} &= x_t + v_{t+1} \cos(\theta_t + \beta_t) \, \Delta t \label{eq_x} \\
+    y_{t+1} &= y_t + v_{t+1} \sin(\theta_t + \beta_t) \, \Delta t \label{eq_y} \\
+    \theta_{t+1} &= \theta_t + \omega_t \, \Delta t \label{eq_theta}
 \end{align}
-where $L = 2.7$~m is wheelbase, $l_r = L/2$ is rear axle to center-of-gravity distance, and $\Delta t = 1/30$~s.
+with $L = 2.7$~m, $l_r = L/2$ and $\Delta t = 1/30$~s. All these operations are differentiable almost everywhere, so gradients flow from the trajectories back into the decoder.
 
 \subsubsection{Kinematic Constraint Validation}
-Each counterfactual trajectory is validated against five physical constraints:
+The rollout limits the controls, but the positions it produces can still imply motion that a real car cannot do, for example when the initial state from the extractor is unrealistic. So PIKV checks the trajectory again, using only the positions. From the $H$ positions it computes finite-difference speeds $s_t$, acceleration vectors $\mathbf{a}_t$ with magnitude $a^{\text{lon}}_t = \|\mathbf{a}_t\|$, headings $\psi_t = \text{atan2}(\dot{y}_t, \dot{x}_t)$, wrapped yaw rates $\omega_t$, and lateral acceleration $a^{\text{lat}}_t = s_t |\omega_t|$. It then counts violations of six checks:
 \begin{enumerate}
-    \item \textbf{Tire Friction Circle:} $\sqrt{a_{\text{lon}}^2 + a_{\text{lat}}^2} \le \mu \cdot g$ \quad ($\mu = 0.7$, dry asphalt)
-    \item \textbf{Maximum Steering:} $|\delta_t| \le \delta_{\max} = 0.6$~rad ($\approx 34°$)
-    \item \textbf{Maximum Yaw Rate:} $|\dot{\theta}_t| \le \dot{\theta}_{\max} = 1.2$~rad/s
-    \item \textbf{Acceleration Bounds:} $a_t \in [-a_{\text{decel}}, \; a_{\text{accel}}]$ with $a_{\text{decel}} = 10$~m/s$^2$, $a_{\text{accel}} = 8$~m/s$^2$
-    \item \textbf{Maximum Speed:} $v_t \le v_{\max} = 90$~m/s ($\approx 324$~km/h)
+    \item \textbf{Acceleration limit:} $a^{\text{lon}}_t > a_{\max} = 8$~m/s$^2$
+    \item \textbf{Braking limit:} $a^{\text{lon}}_t > a_{\text{brake,max}} = 10$~m/s$^2$ (since $a^{\text{lon}}_t$ is a magnitude, this check is stricter than the first one and only adds weight to very hard events)
+    \item \textbf{Yaw rate:} $|\omega_t| > \dot{\psi}_{\max} = 1.2$~rad/s
+    \item \textbf{Lateral acceleration:} $a^{\text{lat}}_t > a_{\text{lat,max}} = 6.0$~m/s$^2$
+    \item \textbf{Tyre friction circle:} $(a^{\text{lon}}_t)^2 + (a^{\text{lat}}_t)^2 > (\mu g)^2 = 47.16$~m$^2$/s$^4$, with $\mu = 0.7$ (dry asphalt)
+    \item \textbf{Speed:} $s_t > v_{\max} = 90$~m/s
 \end{enumerate}
-
-The PIKV produces a validity mask $V_{i,k} \in \{0, 1\}$ and violation score $\nu_{i,k} \in [0, 1]$ for each counterfactual trajectory $(i, k)$.
-
-\subsection{Counterfactual Risk Tensor (CRT) \& Graduated Preemptive Intervention}
-The Counterfactual Risk Tensor aggregates per-agent, per-counterfactual risk while filtering physically impossible scenarios:
+For each check $c$, let $f_c \in [0,1]$ be the fraction of time steps that violate it. The violation score and the validity mask are
 \begin{equation}
-    \text{CRT}(t) = \max_{i \in \mathcal{V}_t} \max_{k \in \mathcal{M}} \left[R_{i,k}(t) \cdot V_{i,k}(t) \cdot H(v_i^t)\right]
+    \nu_{i,k} = \frac{1}{6} \sum_{c=1}^{6} f_c, \qquad
+    V_{i,k} = \left(1 - I^{\text{fric}}_{i,k}\right) \cdot \mathbb{I}\left(\nu_{i,k} < 0.5\right)
+    \label{eq_validity}
+\end{equation}
+where $I^{\text{fric}}_{i,k} = 1$ if the friction circle is broken at \emph{any} step. So a single friction violation is enough to reject a hypothesis, while the other checks reject it only when they are violated often. PIKV has no trainable parameters.
+
+\subsection{Counterfactual Risk Tensor (CRT) and Graduated Preemptive Intervention}
+The CRT combines the risk from CSGA, the validity from PIKV and the hazard weight from the scene graph, and takes the worst case over all agents and modes:
+\begin{equation}
+    \text{CRT}(t) = \max_{i \in \mathcal{V}_t} \; \max_{k \in \mathcal{M}} \left[R_{i,k}(t) \cdot V_{i,k}(t) \cdot H(v_i^t)\right] \in [0, 1]
     \label{eq_crt}
 \end{equation}
-where $R_{i,k}$ is the risk logit from CSGA, $V_{i,k}$ is the PIKV validity mask, and $H(v_i^t)$ is the hazard weight. The CRT scalar $\text{CRT}(t) \in [0, 1]$ drives a five-level graduated preemptive intervention state machine:
+One direct consequence is $\text{CRT}(t) \le \max_i H(v_i^t)$, so the CRT can never be larger than the hazard weight of the most dangerous agent. In the online loop, the value is smoothed with a leaky integrator to stop single-frame spikes:
+\begin{equation}
+    \overline{\text{CRT}}(t) = \gamma \, \overline{\text{CRT}}(t-1) + (1 - \gamma) \, \text{CRT}(t), \qquad \gamma = 0.9, \quad \overline{\text{CRT}}(0) = 0.
+    \label{eq_smooth}
+\end{equation}
+The (smoothed) CRT selects one of five intervention levels:
 \begin{equation}
     \text{Action}(t) = \begin{cases}
     \textbf{Level 0: Nominal} & \text{if } \text{CRT}(t) < 0.25 \\
@@ -290,197 +394,409 @@ where $R_{i,k}$ is the risk logit from CSGA, $V_{i,k}$ is the PIKV validity mask
     \end{cases}
     \label{eq_intervention}
 \end{equation}
+Level 1 shows the predicted conflict zone on the HUD, Level 2 adds an audible alert and the predicted trajectory, Level 3 pre-charges the brakes and readies lane centring, and Level 4 triggers autonomous emergency braking (AEB) together with a minimum risk manoeuvre (MRM).
+
+\textbf{Training objective.} The network is trained with three loss terms:
+\begin{equation}
+    \mathcal{L} = \text{SmoothL1}_{\beta = 0.1}\left(\text{CRT}, \text{CRT}^{*}\right) + 0.5 \, \text{CE}\left(\hat{\ell}, \ell^{*}\right) + 0.2 \, \overline{\nu}
+    \label{eq_loss}
+\end{equation}
+where $\text{CRT}^{*}$ is the target risk, $\ell^{*} \in \{0, \dots, 4\}$ is the target intervention level predicted by a small classifier on mean-pooled scene embeddings, and $\overline{\nu}$ is the mean violation score. Because $\nu$ is built from indicator functions, the last term currently gives zero gradient and works only as a logged physics metric. Replacing it with a soft hinge penalty is a simple improvement we plan to make.
 
 % 4) You can add an algorithm for your entire proposed method
 \subsection{Algorithmic Formulation}
-The complete operational workflow is detailed in Algorithm~\ref{algo1}.
+The complete per-frame workflow is given in Algorithm~\ref{algo1}.
 
 \begin{algorithm}[H]
-	\caption{PC-CSG Counterfactual Anomaly Anticipation Pipeline} 
+	\caption{PC-CSG Counterfactual Anomaly Anticipation Pipeline}
 	\begin{algorithmic}[1]
-		\Require Road camera frame $I_t$, Ego kinematic state, Config: $K=6$, $\tau_{\text{crit}}=3.0$s
-		\Ensure Intervention Decision $A(t)$, CRT scalar $\text{CRT}(t)$
-		\State \textbf{Initialize:} Temporal CRT buffer $\leftarrow 0$, PIKV constraints from bicycle model
-		\ForEach{perception time step $t$}
-			\State Detect traffic participants; construct scene graph $\mathcal{G}_t = (\mathcal{V}_t, \mathcal{E}_t)$ via Eq.~(\ref{eq_node}--\ref{eq_edge})
-			\State Compute hazard weights $H(v_i^t)$ for each node via Eq.~(\ref{eq_hazard})
-			\State Project nodes and edges to $D$-dimensional embeddings $\mathbf{h}_i$
-			\State Compute causal gates $G_{ij}$ for each edge via Eq.~(\ref{eq_gate})
-			\State Identify critical agents: $\mathcal{C}_t = \{i : H(v_i^t) > 0.2\}$
-			\ForEach{critical agent $i \in \mathcal{C}_t$}
-				\ForEach{counterfactual mode $k \in \{1, \dots, K\}$}
-					\State Generate counterfactual query $\mathbf{q}_{i,k}^{\text{cf}}$ via Eq.~(\ref{eq_cf_query})
-					\State Compute risk logit $R_{i,k}(t)$ via cross-attention + risk head (Eq.~\ref{eq_risk_logit})
-					\State Decode control sequence $(a_t, \delta_t)$ from counterfactual embedding
-					\State Propagate trajectory via kinematic bicycle model (Eq.~\ref{eq_x}--\ref{eq_v})
-					\State Validate trajectory: $(V_{i,k}, \nu_{i,k}) \gets \text{PIKV}(\text{trajectory})$
-				\EndFor
+		\Require Road camera frame $I_t$, ego state, $K=6$, $H=15$, $\tau_{\text{crit}}=3.0$~s, $\lambda_{\text{scale}}=0.5$, $\gamma = 0.9$
+		\Ensure Intervention level $A(t)$, risk score $\overline{\text{CRT}}(t)$
+		\State \textbf{Initialize:} $\overline{\text{CRT}}(0) \gets 0$; load PIKV limits ($\mu$, $\delta_{\max}$, $\dot{\psi}_{\max}$, $a_{\max}$, $a_{\text{lat,max}}$)
+		\ForEach{frame $t$}
+			\State Detect and track agents; build nodes and edges of $\mathcal{G}_t$ via Eq.~(\ref{eq_node})--(\ref{eq_edge})
+			\State Compute $\text{TTC}_i(t)$ via Eq.~(\ref{eq_ttc}) and hazard weights $H(v_i^t)$ via Eq.~(\ref{eq_hazard})
+			\State Project nodes and edges to $\mathbf{h}_i$, $\mathbf{e}_{ij}$; compute gate scores $G_{ij}$ via Eq.~(\ref{eq_gate})
+			\State Apply scene self-attention to $\{\mathbf{h}_i\}$
+			\State Critical set $\mathcal{C}_t \gets \{i : H(v_i^t) > 0.2\}$
+			\ForEach{agent $i \in \mathcal{C}_t$ and mode $k \in \{1, \dots, K\}$} \Comment{batched on GPU}
+				\State $\mathbf{q}_{i,k}^{\text{cf}} \gets$ Eq.~(\ref{eq_cf_query}); \; $\mathbf{o}_{i,k} \gets$ Eq.~(\ref{eq_cf_attn}); \; $R_{i,k}(t) \gets$ Eq.~(\ref{eq_risk_logit})
+				\State Decode controls $(a_t, \delta_t)_{t=1}^{H}$ via Eq.~(\ref{eq_prior})
+				\State Roll out trajectory via Eq.~(\ref{eq_slip})--(\ref{eq_theta})
+				\State $(V_{i,k}, \nu_{i,k}) \gets \text{PIKV}(\text{trajectory})$ via Eq.~(\ref{eq_validity})
 			\EndFor
-			\State Compute $\text{CRT}(t) = \max_{i,k} [R_{i,k} \cdot V_{i,k} \cdot H(v_i^t)]$ via Eq.~(\ref{eq_crt})
-			\State Determine $A(t)$ from CRT thresholds via Eq.~(\ref{eq_intervention})
+			\State $\text{CRT}(t) \gets \max_{i,k} [R_{i,k} \cdot V_{i,k} \cdot H(v_i^t)]$ via Eq.~(\ref{eq_crt})
+			\State $\overline{\text{CRT}}(t) \gets \gamma \, \overline{\text{CRT}}(t-1) + (1-\gamma) \, \text{CRT}(t)$ via Eq.~(\ref{eq_smooth})
+			\State $A(t) \gets$ level from Eq.~(\ref{eq_intervention})
 		\EndFor
 	\end{algorithmic}
 	\label{algo1}
 \end{algorithm}
 
 \subsection{Novelty Highlights: Mathematical Proofs and Operational Examples}
-\subsubsection{Proposition 1: PIKV Friction Circle Elimination Bound}
-\textbf{Proposition 1.} \textit{Let a counterfactual trajectory hypothesis $\tau_{i,k}$ produce total acceleration vector $\mathbf{a}_t = [a_{\text{lon}, t}, a_{\text{lat}, t}]^\top$ across discrete time steps $t \in \{1, \dots, H\}$. Under the PIKV kinematic bicycle model with tire-road friction coefficient $\mu = 0.7$ and gravitational acceleration $g = 9.81$~m/s$^2$, the validator enforces the hard physical condition $V_{i,k} = 0$ whenever $\max_{t} (a_{\text{lon}, t}^2 + a_{\text{lat}, t}^2) > (\mu \cdot g)^2$, strictly eliminating all trajectory hypotheses where acceleration exceeds the Coulomb friction bound from contributing to the Counterfactual Risk Tensor.}
+\subsubsection{Proposition 1: PIKV Friction Circle Elimination and Frame Invariance}
+\textbf{Proposition 1.} \textit{Let $\tau_{i,k}$ be a counterfactual trajectory with PIKV-estimated accelerations $(a^{\text{lon}}_t, a^{\text{lat}}_t)$, $t = 1, \dots, H$, and let $\mu = 0.7$, $g = 9.81$~m/s$^2$.}
+\begin{enumerate}
+    \item[(a)] \textit{If $\max_t \left[(a^{\text{lon}}_t)^2 + (a^{\text{lat}}_t)^2\right] > (\mu g)^2 = 47.16$~m$^2$/s$^4$, then $V_{i,k} = 0$, and the pair $(i,k)$ has no influence on $\text{CRT}(t)$ beyond the trivial lower bound $0$.}
+    \item[(b)] \textit{Let $T_{\varphi, \mathbf{p}}$ be any rigid planar motion (rotation by $\varphi$ followed by translation by $\mathbf{p}$). If the initial state is transformed as $(x_0, y_0, v_0, \theta_0) \mapsto (R_\varphi [x_0, y_0]^T + \mathbf{p}, \; v_0, \; \theta_0 + \varphi)$ and the controls are kept the same, then the rollout of Eq.~(\ref{eq_slip})--(\ref{eq_theta}) is transformed in the same way, $[x_t', y_t']^T = R_\varphi [x_t, y_t]^T + \mathbf{p}$ for all $t$, and $V_{i,k}$ and $\nu_{i,k}$ do not change.}
+\end{enumerate}
 
-\textbf{Proof.} The Coulomb friction circle bounds the maximum allowable resultant horizontal acceleration attainable by tire-road interaction to $a_{\max} = \mu \cdot g$. In the PIKV module, for each predicted counterfactual trajectory $\tau_{i,k}$, longitudinal acceleration $a_{\text{lon}, t}$ and lateral acceleration $a_{\text{lat}, t} = v_t^2 \tan(\delta_t) / L$ are evaluated at each time step. If $\exists t \in \{1, \dots, H\}$ such that $a_{\text{total}, t}^2 = a_{\text{lon}, t}^2 + a_{\text{lat}, t}^2 > (\mu \cdot g)^2$, the boolean indicator $I_{\text{friction}} = 1$. The validity mask is defined as:
-\begin{equation}
-    V_{i,k} = (1 - I_{\text{friction}}) \cdot \mathbb{I}(\nu_{i,k} < 0.5)
-\end{equation}
-where $\nu_{i,k}$ is the normalized violation score across kinematic envelope checks. Therefore, if $a_{\text{total}, t} > \mu \cdot g$ for any step $t$, $V_{i,k} \equiv 0$, identically setting the effective risk contribution $R_{i,k} \cdot V_{i,k} = 0$. Consequently, no physically impossible maneuver exceeding available tire friction can influence the CRT or trigger premature false interventions. \hfill $\blacksquare$
+\textbf{Proof.} \textit{Part (a).} By Eq.~(\ref{eq_validity}), $I^{\text{fric}}_{i,k} = 1$ exactly when there is a step $t$ with $(a^{\text{lon}}_t)^2 + (a^{\text{lat}}_t)^2 > (\mu g)^2$. The hypothesis of (a) says such a step exists, so $I^{\text{fric}}_{i,k} = 1$ and $V_{i,k} = (1 - 1) \cdot \mathbb{I}(\nu_{i,k} < 0.5) = 0$, whatever the value of $\nu_{i,k}$. The term of $(i,k)$ in Eq.~(\ref{eq_crt}) is then $R_{i,k} \cdot 0 \cdot H(v_i^t) = 0$. All terms in the maximum are non-negative, because $R_{i,k}, H(v_i^t) \in [0,1]$ and $V_{i,k} \in \{0,1\}$. So a zero term can never be the strict maximum: $\text{CRT}(t)$ is the maximum over the remaining valid pairs, or $0$ if there are none. Since $\text{CRT}(t)$ does not depend on $R_{i,k}$ at all, no risk score assigned to a friction-violating manoeuvre can raise the CRT or trigger an intervention.
 
-\subsubsection{Proposition 2: False Positive Reduction Bound}
-\textbf{Proposition 2.} \textit{Let $\mathcal{T}_{\text{all}}$ denote the set of all counterfactual trajectory hypotheses and $\mathcal{T}_{\text{valid}} \subset \mathcal{T}_{\text{all}}$ the subset satisfying PIKV constraints. Let $\mathcal{F}_{\text{all}}$ denote false positive interventions from unconstrained CRT and $\mathcal{F}_{\text{valid}}$ from PIKV-filtered CRT. Then:}
-\begin{equation}
-    \frac{|\mathcal{F}_{\text{valid}}|}{|\mathcal{F}_{\text{all}}|} \le \frac{|\mathcal{T}_{\text{valid}}|}{|\mathcal{T}_{\text{all}}|}
-\end{equation}
-\textit{i.e., the false positive rate reduction is at least proportional to the fraction of physically valid trajectories.}
+\textit{Part (b).} We use induction on $t$. At $t = 0$ the claim holds by construction, and $\theta_0' = \theta_0 + \varphi$. Suppose that at step $t$ we have $[x_t', y_t']^T = R_\varphi [x_t, y_t]^T + \mathbf{p}$, $v_t' = v_t$ and $\theta_t' = \theta_t + \varphi$. The controls are the same, so $\beta_t' = \beta_t$ by Eq.~(\ref{eq_slip}). Eq.~(\ref{eq_v})--(\ref{eq_yaw}) only use $v_t$, $a_t$, $\delta_t$ and $\beta_t$, so $v_{t+1}' = v_{t+1}$ and $\omega_t' = \omega_t$. For the position, using $[\cos(\alpha + \varphi), \sin(\alpha + \varphi)]^T = R_\varphi [\cos \alpha, \sin \alpha]^T$,
+\begin{equation*}
+\begin{bmatrix} x_{t+1}' \\ y_{t+1}' \end{bmatrix}
+= R_\varphi \begin{bmatrix} x_t \\ y_t \end{bmatrix} + \mathbf{p} + v_{t+1} \Delta t \, R_\varphi \begin{bmatrix} \cos(\theta_t + \beta_t) \\ \sin(\theta_t + \beta_t) \end{bmatrix}
+= R_\varphi \begin{bmatrix} x_{t+1} \\ y_{t+1} \end{bmatrix} + \mathbf{p},
+\end{equation*}
+and $\theta_{t+1}' = \theta_t + \varphi + \omega_t \Delta t = \theta_{t+1} + \varphi$. This completes the induction. For PIKV, finite differences of positions cancel $\mathbf{p}$ and rotate velocities and accelerations by $R_\varphi$. Rotations preserve norms, so $s_t$ and $a^{\text{lon}}_t$ do not change. Every heading is shifted by $\varphi$, so the wrapped heading differences and hence $\omega_t$ and $a^{\text{lat}}_t = s_t |\omega_t|$ do not change either. All six checks therefore give the same result, and $\nu_{i,k}$ and $V_{i,k}$ are unchanged. \hfill $\blacksquare$
 
-\textbf{Proof.} Any false positive intervention requires $\text{CRT}(t) > \theta$ for some threshold $\theta$. Since CRT is computed as a maximum over $R_{i,k} \cdot V_{i,k} \cdot H_i$, setting $V_{i,k} = 0$ for invalid trajectories removes their risk contribution entirely. In the worst case (all invalid trajectories had $R_{i,k} = 1$), the false positive rate scales with the valid fraction. In practice, the reduction exceeds this bound because invalid trajectories disproportionately correspond to extreme, high-risk-scoring but impossible maneuvers. \hfill $\blacksquare$
+\textbf{Numerical check.} We ran the reproduction script on a trajectory that moves at 20~m/s and then turns sharply sideways. PIKV set $V = 0$ as expected, while a gentle arc with radius 50~m at 10~m/s ($a^{\text{lat}} = 2.0$~m/s$^2$) was accepted. We also rotated a scene by $\varphi = \pi/4$ and translated it by $(\Delta x, \Delta y) = (+15.0, -8.0)$~m; the CRT changed by only $|\Delta \text{CRT}| = 2.04 \times 10^{-6}$, which is below our tolerance of $10^{-5}$ and is consistent with float32 round-off. Part (b) covers the physics layers only. The learned CSGA layers take absolute coordinates as input, so the small CRT difference is an empirical observation for them rather than a guarantee.
+
+\subsubsection{Proposition 2: False Positive Non-Increase and Monotone Escalation}
+\textbf{Proposition 2.} \textit{Let $\text{CRT}_{u}(t) = \max_{i,k} [R_{i,k}(t) H(v_i^t)]$ be the unconstrained counterfactual risk (no PIKV) and $\text{CRT}_{p}(t)$ the PIKV-filtered risk of Eq.~(\ref{eq_crt}), both smoothed by Eq.~(\ref{eq_smooth}) from the same initial value $0$. For any alarm threshold $\theta$, let $\mathcal{F}_u$ and $\mathcal{F}_p$ be the sets of frames from benign (non-anomalous) sequences on which the respective score exceeds $\theta$. Then:}
+\begin{enumerate}
+    \item[(a)] \textit{$\mathcal{F}_p \subseteq \mathcal{F}_u$, and $|\mathcal{F}_u| - |\mathcal{F}_p|$ equals the number of frames in $\mathcal{F}_u$ that drop to or below $\theta$ when every above-threshold hypothesis that PIKV rejects is removed.}
+    \item[(b)] \textit{If, over a sequence of frames, the risks $R_{i,k}$ and validities $V_{i,k}$ stay fixed and every $\text{TTC}_i$ is non-increasing (with finite values), then the smoothed $\overline{\text{CRT}}_p(t)$ is non-decreasing.}
+\end{enumerate}
+
+\textbf{Proof.} \textit{Part (a).} For every pair, $V_{i,k} \in \{0,1\}$ and $R_{i,k} H(v_i^t) \ge 0$, so $R_{i,k} V_{i,k} H(v_i^t) \le R_{i,k} H(v_i^t)$. Taking the maximum on both sides gives $\text{CRT}_p(t) \le \text{CRT}_u(t)$ for every frame. Smoothing keeps this order. If $\overline{\text{CRT}}_p(t-1) \le \overline{\text{CRT}}_u(t-1)$, then
+\begin{equation*}
+\overline{\text{CRT}}_p(t) = \gamma \overline{\text{CRT}}_p(t-1) + (1-\gamma) \text{CRT}_p(t) \le \gamma \overline{\text{CRT}}_u(t-1) + (1-\gamma) \text{CRT}_u(t) = \overline{\text{CRT}}_u(t),
+\end{equation*}
+because $\gamma, 1 - \gamma \ge 0$, and the base case $0 \le 0$ holds. So whenever the filtered score exceeds $\theta$, the unfiltered one does too, which gives $\mathcal{F}_p \subseteq \mathcal{F}_u$. The difference $\mathcal{F}_u \setminus \mathcal{F}_p$ is exactly the set of frames that stop alarming once the invalid hypotheses are set to zero, which is the counting statement. In particular, PIKV can never add a false alarm.
+
+\textit{Part (b).} The derivative of the hazard sigmoid is $\partial H / \partial \text{TTC} = -H(1 - H)/\lambda_{\text{scale}} \le 0$, so a non-increasing TTC gives a non-decreasing $H(v_i^t)$. Each term $R_{i,k} V_{i,k} H(v_i^t)$ has non-negative fixed factors, so it is non-decreasing in $H$, and a maximum of non-decreasing sequences is non-decreasing. Hence $x_t := \text{CRT}_p(t)$ is non-decreasing and non-negative. For the smoothed score, $\overline{\text{CRT}}_p(t-1)$ is a convex combination of $0, x_1, \dots, x_{t-1}$, all of which are $\le x_t$. So $\overline{\text{CRT}}_p(t-1) \le x_t$, and
+\begin{equation*}
+\overline{\text{CRT}}_p(t) - \overline{\text{CRT}}_p(t-1) = (1 - \gamma)\left(x_t - \overline{\text{CRT}}_p(t-1)\right) \ge 0. \hspace{2cm} \blacksquare
+\end{equation*}
+
+\textbf{Numerical check.} Along a simulated closing sequence behind a decelerating lead vehicle, the measured risk was $0.003 \rightarrow 0.015 \rightarrow 0.042 \rightarrow 0.089 \rightarrow 0.160$, which is non-decreasing as Part (b) predicts. The slow growth also shows the cost of smoothing. With $\gamma = 0.9$, a sudden step of the raw CRT from 0 to 1 needs $\lceil \ln(0.15)/\ln(0.9) \rceil = 19$ frames (about 0.63~s at 30~FPS) before the smoothed value crosses the Level~4 threshold of 0.85.
 
 \subsubsection{Concrete Operational Anticipation Scenarios}
+We ran the demo engine on four scripted highway scenarios. Their measured values are in Table~\ref{table_scenarios} and Figure~\ref{fig_scenarios}.
 \begin{itemize}
-    \item \textbf{Scenario A (Nominal, CRT = 0.08):} Highway cruising at 100~km/h. Three surrounding vehicles maintain safe following distances ($TTC > 10$~s). CSGA generates 18 counterfactual hypotheses (3 agents $\times$ 6 modes). All PIKV-validated trajectories yield low risk. CRT $= 0.08 < 0.25 \implies$ \textbf{Level 0: Nominal Operation}.
-    \item \textbf{Scenario B (Advisory, CRT = 0.38):} Lead vehicle decelerating. CSGA counterfactual ``sudden\_brake'' on lead vehicle predicts TTC dropping to 1.8~s. PIKV validates this scenario as physically plausible ($\nu = 0.05$). CRT $= 0.38 \implies$ \textbf{Level 1: HUD Advisory Overlay} showing predicted collision zone.
-    \item \textbf{Scenario C (Alert, CRT = 0.62):} Adjacent truck with ``hard\_swerve\_right'' counterfactual predicts lane intrusion in 0.9~s. PIKV confirms kinematic feasibility ($\nu = 0.12$). CRT $= 0.62 \implies$ \textbf{Level 2: Active Alert} with predictive trajectory display and audible warning.
-    \item \textbf{Scenario D (Emergency, CRT = 0.93):} Stationary barrier ahead + lead vehicle braking. All six counterfactual escape trajectories fail PIKV validation (insufficient space/time). CRT $= 0.93 \implies$ \textbf{Level 4: Autonomous Emergency Braking + Minimum Risk Maneuver}.
+    \item \textbf{Scenario A (Highway cruise, all clear):} Ego at 100.1~km/h, with the worst TTC at 33.3~s. Every hazard weight is practically zero, so CRT $= 0.000$ and the system stays at \textbf{Level 0}.
+    \item \textbf{Scenario B (Lead vehicle decelerating):} Ego at 110.2~km/h, worst TTC 4.1~s. The CRT rises to $0.103$, which is still below the 0.25 advisory threshold, so the system stays at \textbf{Level 0} and keeps monitoring. This is the expected behaviour, since the CRT stays close to the hazard weight $H(\text{TTC}=4.1~\text{s}) \approx 0.10$ of the lead vehicle.
+    \item \textbf{Scenario C (Lane-change swerve conflict):} Ego at 119.9~km/h, worst TTC 1.9~s. The swerve hypotheses of the adjacent vehicle pass PIKV, and CRT $= 0.894$, so the system goes to \textbf{Level 4} (AEB + MRM).
+    \item \textbf{Scenario D (Barrier + hard lead braking):} Ego at 100.1~km/h, worst TTC 0.5~s. CRT $= 0.987$ gives \textbf{Level 4} with full AEB.
 \end{itemize}
 
-\section{Datasets and Experimental results analysis}
+\section{Datasets and Experimental results analysis} \label{section4}
 % 1) Discuss about the datasets which you have used for your experiments
-Experimental evaluations were conducted on benchmark autonomous driving datasets (nuScenes \cite{caesar2020nuscenes}, Waymo Open \cite{sun2020waymo}) alongside synthetic multi-agent traffic scenario generators. Table~\ref{table_datasets} summarizes dataset characteristics.
+We trained and evaluated PC-CSG on the public traffic accident detection dataset released on Hugging Face as \texttt{hiennguyen9874/traffic-accident-detection} \cite{hiennguyen2024accident}. Our dataset loader converts each sample into scene graph inputs (node features, edges, hazard weights) together with a target CRT value and intervention level. We used 3,000 scenes for training and 600 for validation. The ablation and pruning analysis use the first 120 validation samples (a 40-sample subset in quick mode). For behaviour checks we also used the four scripted demo scenarios of Section~\ref{section3}. We did not train or evaluate on nuScenes \cite{caesar2020nuscenes} or the Waymo Open Dataset \cite{sun2020waymo} for this paper; they are listed only as planned benchmarks. Table~\ref{table_datasets} summarises the data we used.
 
 \begin{table}[H]
-\caption{Benchmark dataset characteristics utilized for experimental validation.}
+\caption{Data used in our experiments.}
 \centering
 \label{table_datasets}
 \adjustbox{max width=\linewidth}{
-\begin{tabular}{l|c|c|c|c|c}
-\hline 
-\textbf{Datasets} & \textbf{\#Scenes} & \textbf{\#Annotations} & \textbf{Challenging Conditions} & \textbf{Modalities} & \textbf{Agent Types} \\
+\begin{tabular}{l|c|c|l|l}
 \hline
-nuScenes \cite{caesar2020nuscenes} & 1000 & 1.4M boxes & Rain, Night, Construction & Camera, LiDAR, Radar & Vehicle, Ped., Cyclist \\
-Waymo Open \cite{sun2020waymo} & 1150 & 12M boxes & Urban, Suburban, Highway & Camera, LiDAR & Vehicle, Ped., Cyclist \\
-Synthetic CRT-Bench & 10000 & 60K scenarios & All 4 risk levels, edge cases & Simulated kinematic & 8 object classes \\
-\hline 
-\end{tabular} 
+\textbf{Data} & \textbf{Split} & \textbf{Samples} & \textbf{Used For} & \textbf{Labels} \\
+\hline
+Traffic accident detection \cite{hiennguyen2024accident} & Train & 3,000 scenes & Training (5 epochs) & CRT target, level (0--4) \\
+Traffic accident detection \cite{hiennguyen2024accident} & Validation & 600 scenes & Model selection & CRT target, level (0--4) \\
+Traffic accident detection \cite{hiennguyen2024accident} & Validation subset & 120 (40 quick) & Ablation, PIKV pruning & Anomaly if CRT$^{*} > 0.4$ \\
+Scripted demo scenarios A--D & -- & 4 scenarios & Behaviour check & Expected level \\
+\hline
+\end{tabular}
 }
 \end{table}
 
-\textbf{Experimental setup.} The PC-CSG network was developed in Python 3.12 and PyTorch 2.6.0 with CUDA 12.4. Profiling was executed on an Ubuntu 22.04 LTS system powered by an Intel Core i7-12700H CPU, 16~GB DDR4 RAM, and an NVIDIA GeForce RTX 3050 Laptop GPU (4~GB VRAM).
+\textbf{Experimental setup.} PC-CSG is implemented in Python 3.12 with PyTorch 2.6.0 and CUDA 12.4. All experiments ran on Ubuntu 22.04 LTS with an Intel Core i7-12700H CPU, 16~GB RAM and an NVIDIA GeForce RTX 3050 Laptop GPU (4~GB VRAM). We trained with AdamW \cite{loshchilov2019adamw} (learning rate $3 \times 10^{-4}$, batch size 16) on the loss of Eq.~(\ref{eq_loss}). For evaluation, a sample is labelled anomalous when its target CRT is above 0.4, and a model predicts an anomaly when its CRT is above 0.4. Accuracy is the fraction of samples classified correctly, and the false positive rate (FPR) is $\text{FP}/(\text{FP}+\text{TN})$.
+
+\textbf{Training behaviour.} Figure~\ref{fig_training} shows the training history. Validation loss went from 0.0840 to 0.0396 and validation CRT mean absolute error settled around 0.042, while validation accuracy was already 100.0\% after the first epoch. The best checkpoint is the one from epoch 5. Getting perfect accuracy after one epoch made us suspicious, and the ablation below shows that this split is very easy to classify.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.48\linewidth, height=5.4cm,
+    xlabel={Epoch}, ylabel={Loss},
+    xmin=0.8, xmax=5.2, ymin=0, ymax=0.4, xtick={1,2,3,4,5},
+    grid=major, grid style={gray!25},
+    legend style={font=\scriptsize}, legend pos=north east,
+    tick label style={font=\footnotesize}, label style={font=\footnotesize},
+    title={\footnotesize (a) Training and validation loss}]
+\addplot[thick, blue, mark=*] coordinates {(1,0.3797) (2,0.0738) (3,0.0506) (4,0.0450) (5,0.0450)};
+\addlegendentry{Train loss}
+\addplot[thick, red, mark=square*] coordinates {(1,0.0840) (2,0.0454) (3,0.0409) (4,0.0398) (5,0.0396)};
+\addlegendentry{Val. loss}
+\end{axis}
+\end{tikzpicture}
+\hfill
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.48\linewidth, height=5.4cm,
+    xlabel={Epoch}, ylabel={Val. CRT MAE},
+    xmin=0.8, xmax=5.2, ymin=0.040, ymax=0.045, xtick={1,2,3,4,5},
+    yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=3},
+    scaled y ticks=false,
+    grid=major, grid style={gray!25},
+    tick label style={font=\footnotesize}, label style={font=\footnotesize},
+    title={\footnotesize (b) Validation CRT mean absolute error}]
+\addplot[thick, teal, mark=triangle*] coordinates {(1,0.0440) (2,0.0417) (3,0.0423) (4,0.0422) (5,0.0417)};
+\end{axis}
+\end{tikzpicture}
+\captionsetup{singlelinecheck = false, format= hang, justification=justified, font=footnotesize, labelsep=space}
+\caption{Training history of PC-CSG on the traffic accident detection dataset \cite{hiennguyen2024accident} (3,000 training / 600 validation scenes, AdamW, learning rate $3 \times 10^{-4}$, batch size 16). Values are taken from our training log; validation accuracy was 100.0\% at every epoch.}
+\label{fig_training}
+\end{figure}
 
 \subsection{Hardware Profiling and Latency Breakdown}
-Table~\ref{table_latency} details the end-to-end processing latency of the PC-CSG framework measured directly across consecutive inference cycles on the RTX 3050 Laptop GPU.
+We timed each component on the RTX 3050 Laptop GPU with $N = 10$ agents, $K = 6$ counterfactuals and $H = 15$ steps. Each component got warm-up iterations first, and we called \texttt{torch.cuda.synchronize()} before and after the timed loop. Table~\ref{table_latency} and Figure~\ref{fig_latency} show the results.
 
 \begin{table}[H]
-\caption{Measured component-level inference latency on NVIDIA RTX 3050 Laptop GPU (10 agents, 6 counterfactuals, 15-frame horizon).}
+\caption{Measured component-level inference latency on an NVIDIA RTX 3050 Laptop GPU ($N=10$ agents, $K=6$ counterfactuals, $H=15$ horizon).}
 \centering
 \label{table_latency}
 \begin{tabular}{l|c|c}
 \hline
-\textbf{Pipeline Component} & \textbf{Latency (ms)} & \textbf{Share} \\
+\textbf{Pipeline Component} & \textbf{Latency (ms)} & \textbf{Share (\%)} \\
 \hline
-Scene Graph Construction \& Hazard Scoring & 0.33~ms & 5.0\% \\
+Scene Graph Construction \& Hazard Scoring & 0.33~ms & 4.9\% \\
 Counterfactual Scene Graph Attention (CSGA) & 1.57~ms & 23.5\% \\
-Kinematic Bicycle Model Propagation ($N \times K$ trajectories) & 4.12~ms & 61.7\% \\
+Kinematic Bicycle Model Propagation ($N \times K$) & 4.12~ms & 61.7\% \\
 Physics-Informed Kinematic Validator (PIKV) & 0.53~ms & 7.9\% \\
 CRT Engine \& Intervention Arbiter & 0.13~ms & 1.9\% \\
 \hline
 \textbf{Total PC-CSG Pipeline Latency} & \textbf{6.68~ms} & \textbf{100.0\%} \\
 \textbf{Effective Real-Time Throughput} & \multicolumn{2}{c}{\textbf{149.7 FPS}} \\
-\textbf{Automotive Real-Time Margin (Threshold: 30 FPS)} & \multicolumn{2}{c}{\textbf{4.99$\times$ Faster than Real-Time}} \\
+\textbf{Automotive Margin (Target: $\ge$ 30 FPS)} & \multicolumn{2}{c}{\textbf{4.99$\times$ Real-Time Throughput}} \\
 \hline
 \end{tabular}
 \end{table}
 
-As documented in Table~\ref{table_latency}, the complete PC-CSG pipeline including counterfactual hypothesis generation, physics validation, and risk aggregation executes in 6.68~ms (149.7~FPS), far exceeding the 30~FPS automotive real-time threshold. The CSGA attention mechanism requires merely 1.57~ms, demonstrating that counterfactual reasoning can be embedded in real-time perception at negligible additional computational burden.
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    xbar, width=0.78\linewidth, height=5.6cm,
+    xlabel={Latency (ms)}, xmin=0, xmax=5,
+    ytick={1,2,3,4,5},
+    yticklabels={CRT Arbiter, PIKV Validator, Bicycle Rollout, CSGA Attention, Scene Graph},
+    y dir=normal, bar width=10pt, enlarge y limits=0.15,
+    nodes near coords, nodes near coords align={horizontal},
+    every node near coord/.append style={font=\scriptsize},
+    tick label style={font=\footnotesize}, label style={font=\footnotesize},
+    grid=major, grid style={gray!25}]
+\addplot[fill=blue!45, draw=blue!70!black] coordinates {(0.13,1) (0.53,2) (4.12,3) (1.57,4) (0.33,5)};
+\end{axis}
+\end{tikzpicture}
+\captionsetup{singlelinecheck = false, format= hang, justification=justified, font=footnotesize, labelsep=space}
+\caption{Component-level latency of PC-CSG on an NVIDIA RTX 3050 Laptop GPU (total 6.68~ms, 149.7~FPS). Values are our own measurements from Table~\ref{table_latency}.}
+\label{fig_latency}
+\end{figure}
+
+The whole pipeline takes 6.68~ms (149.7~FPS), which is about 5 times faster than the usual 30~FPS camera rate. The attention part, CSGA, takes only 1.57~ms. The largest cost by far (4.12~ms, 61.7\%) is the bicycle model rollout. That surprised us at first, but it makes sense: the rollout is a Python loop over 15 time steps, and each step launches several small GPU kernels for only $N \times K = 60$ trajectories, so the GPU spends most of its time waiting on kernel launches rather than computing. Fusing the loop (for example with \texttt{torch.compile} or a custom CUDA kernel) is the most obvious way to bring the total under 3~ms.
 
 \subsection{PIKV Validation Effectiveness and Proposition Verification}
-Figure~\ref{segmentposeduke} illustrates the empirical effectiveness of PIKV filtering across counterfactual modes and verifies Propositions~1 and~2.
-
-\begin{figure}[H]
-	\centering
-	\includegraphics[width=1.0\textwidth]{images/duke_threshold.jpeg}
-	\captionsetup{singlelinecheck = false, format= hang, justification=justified, font=footnotesize, labelsep=space}
-	\caption{PIKV validation analysis: (a) percentage of counterfactual trajectories rejected per mode, demonstrating that extreme maneuvers (hard swerve, sudden acceleration) are filtered at higher rates, and (b) friction circle violation detection showing that all trajectories exceeding $a_{\text{total}} > \mu g = 6.87$~m/s$^2$ are correctly identified and eliminated.}
-	\label{segmentposeduke}
-\end{figure}
-
-Across evaluated real-world validation scenarios, PIKV eliminates 43.9\% of all counterfactual trajectory hypotheses. The rejection rate varies by mode in accordance with vehicle dynamics: ``hard\_swerve\_left'' (63.2\%), ``sudden\_acceleration'' (100.0\%), ``lane\_departure'' (68.4\%), ``hard\_swerve\_right'' (18.4\%), ``stationary\_obstacle'' (13.2\%), and ``sudden\_brake'' (0.0\% when decelerating within tire friction bounds).
-
-\subsection{Ablation Study and Counterfactual Risk Analysis}
-Figure~\ref{fourdatasetscmc} illustrates the pipeline latency breakdown and CRT trajectories across operational scenarios.
-
-\begin{figure}[H]
-	\centering
-	\includegraphics[width=1.0\textwidth]{images/fourdataset.jpeg}
-	\captionsetup{singlelinecheck = false, format= hang, justification=justified, font=footnotesize, labelsep=space}
-	\caption{Benchmark performance evaluation: (a) Component-level inference latency on NVIDIA RTX 3050 GPU, and (b) Dynamic CRT trajectories across Scenarios A--D with five-level graduated intervention zones.}
-	\label{fourdatasetscmc}
-\end{figure}
-
-Table~\ref{table_ablation} provides a systematic ablation analysis comparing configurations evaluated on the real-world validation dataset.
+Over the 120 validation samples there were 113 critical agents, which gives 678 counterfactual hypotheses. PIKV rejected 312 of them (\textbf{46.0\%}). In the 40-sample quick run the pruning rate was 43.9\%. Table~\ref{table_pruning} and Figure~\ref{fig_pikv}(a) give the rate for each mode.
 
 \begin{table}[H]
-\caption{Systematic ablation study of PC-CSG architectural components.}
+\caption{PIKV hypothesis pruning across the six counterfactual modes (678 hypotheses, 113 per mode, from real traffic validation samples).}
+\label{table_pruning}
+\centering
+\adjustbox{max width=\linewidth}{
+\begin{tabular}{l|c|l}
+\hline
+\textbf{Counterfactual Mode} & \textbf{Pruning Rate} & \textbf{Main Rejection Reason} \\
+\hline
+\texttt{sudden\_brake} & 0.0\% & Straight-line deceleration stays inside the friction circle \\
+\texttt{hard\_swerve\_left} & 70.8\% & Lateral acceleration exceeds $a_{\text{lat,max}}$ / friction circle \\
+\texttt{hard\_swerve\_right} & 21.2\% & Rejected only when path curvature breaks friction limits \\
+\texttt{sudden\_acceleration} & 100.0\% & Surge combined with learned steering breaks $a_{\text{total}} \le \mu g$ \\
+\texttt{lane\_departure} & 73.5\% & Yaw rate exceeds $\dot{\psi}_{\max} = 1.2$~rad/s \\
+\texttt{stationary\_obstacle} & 10.6\% & Feasible unless stopping needs more than the available deceleration \\
+\hline
+\textbf{Overall Pruning Rate} & \textbf{46.0\%} & \textbf{312 / 678 hypotheses filtered} \\
+\hline
+\end{tabular}
+}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    ybar, width=0.52\linewidth, height=6cm,
+    ylabel={Hypotheses rejected (\%)}, ymin=0, ymax=118,
+    xtick={1,2,3,4,5,6},
+    xticklabels={Brake, Swerve L, Swerve R, Accel., Lane dep., Stationary},
+    x tick label style={rotate=35, anchor=east, font=\scriptsize},
+    xmin=0.4, xmax=6.6, bar width=11pt,
+    nodes near coords, every node near coord/.append style={font=\tiny},
+    tick label style={font=\footnotesize}, label style={font=\footnotesize},
+    grid=major, grid style={gray!25},
+    title={\footnotesize (a) Pruning rate per mode}]
+\addplot[fill=orange!60, draw=orange!70!black] coordinates {(1,0.0) (2,70.8) (3,21.2) (4,100.0) (5,73.5) (6,10.6)};
+\draw[dashed, red, thick] (axis cs:0.4,46.0) -- (axis cs:6.6,46.0);
+\node[font=\tiny, red, anchor=south east] at (axis cs:6.6,46.0) {overall 46.0\%};
+\end{axis}
+\end{tikzpicture}
+\hfill
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.46\linewidth, height=6cm,
+    xlabel={Speed $v$ (m/s)}, ylabel={$a^{\text{lat}} = v^2 \tan\delta / L$ (m/s$^2$)},
+    xmin=0, xmax=20, ymin=0, ymax=20, domain=0:20, samples=81,
+    restrict y to domain=0:25,
+    legend style={font=\tiny, at={(0.02,0.98)}, anchor=north west},
+    tick label style={font=\footnotesize}, label style={font=\footnotesize},
+    grid=major, grid style={gray!25},
+    title={\footnotesize (b) Kinematic envelope}]
+\addplot[thick, blue] {x^2*0.48306/2.7};
+\addlegendentry{Swerve prior $\delta = 0.45$}
+\addplot[thick, teal, dashdotted] {x^2*0.15114/2.7};
+\addlegendentry{Lane-dep. prior $\delta = 0.15$}
+\addplot[thick, red, dashed, domain=0:20] {6.867};
+\addlegendentry{$\mu g = 6.867$}
+\addplot[thick, gray, dotted, domain=0:20] {6.0};
+\addlegendentry{$a_{\text{lat,max}} = 6.0$}
+\addplot[only marks, mark=*, mark size=1.5pt] coordinates {(6.20,6.867) (11.08,6.867)};
+\end{axis}
+\end{tikzpicture}
+\captionsetup{singlelinecheck = false, format= hang, justification=justified, font=footnotesize, labelsep=space}
+\caption{PIKV validation analysis. (a) Measured share of rejected hypotheses per counterfactual mode over 678 hypotheses; the dashed line is the overall rate of 46.0\%. (b) Lateral acceleration implied by the steering priors of the two steering modes as a function of speed, computed analytically from the bicycle model ($L = 2.7$~m). The swerve prior leaves the friction circle above about 6.2~m/s and the lane-departure prior above about 11.1~m/s (marked points), which explains why steering modes are pruned most at road speeds.}
+\label{fig_pikv}
+\end{figure}
+
+The pattern mostly matches what basic vehicle dynamics predicts. Straight-line braking at the prior of $-5$~m/s$^2$ is well inside the friction circle ($5 < 6.867$), so \texttt{sudden\_brake} is never rejected. Figure~\ref{fig_pikv}(b) shows that the swerve prior of $\delta = 0.45$~rad already breaks the friction limit at about 22~km/h, so at road speeds most swerve hypotheses are rejected unless the decoder reduces the steering. Two results we cannot fully explain yet. First, the steering priors for left and right swerves are symmetric, but the pruning rates are not (70.8\% vs.\ 21.2\%). This asymmetry must come from the learned decoder residuals and from the data itself, and we have not yet checked which. Second, \texttt{sudden\_acceleration} is rejected 100\% of the time even though its prior of $+4$~m/s$^2$ alone is legal. The learned residuals seem to add steering on top of the surge, which pushes the combined acceleration past $\mu g$. In practice this means the sudden-acceleration mode never contributes to the CRT in our runs, which is a weakness of the current decoder.
+
+\subsection{Ablation Study and Counterfactual Risk Analysis}
+Table~\ref{table_ablation} compares five configurations on the 120-sample validation split. ``Latency'' here is the wall-clock time per sample with batch size 16 inside the evaluation loop, so it is not comparable with the per-frame numbers in Table~\ref{table_latency}.
+
+\begin{table}[H]
+\caption{Ablation study on the 120-sample validation split (anomaly threshold CRT $> 0.4$).}
 \centering
 \label{table_ablation}
 \adjustbox{max width=\linewidth}{
-\begin{tabular}{l|c|c|c|c}
+\begin{tabular}{l|c|c|c}
 \hline
-\textbf{Configuration} & \textbf{Anticipation Acc. (\%)} & \textbf{False Positive (\%)} & \textbf{Mean Lead Time (s)} & \textbf{Latency (ms)} \\
+\textbf{Configuration} & \textbf{Accuracy (\%)} & \textbf{FPR (\%)} & \textbf{Latency / sample (ms)} \\
 \hline
-Reactive TTC-Only Baseline & 95.0\% & 100.0\% & 0.00~s & 0.15~ms \\
-Scene Graph Attention (No CF, No PIKV) & 5.0\% & 0.0\% & 1.50~s & 0.35~ms \\
-CSGA without PIKV (Unconstrained CF) & 100.0\% & 0.0\% & 0.00~s & 0.62~ms \\
-CSGA + PIKV without Causal Gating & 100.0\% & 0.0\% & 0.00~s & 0.60~ms \\
-\textbf{PC-CSG Full (CSGA + PIKV + Causal Gate)} & \textbf{100.0\%} & \textbf{0.0\%} & \textbf{0.00~s} & \textbf{1.01~ms} \\
+Reactive TTC-Only Baseline (anomaly if $\min_i \text{TTC}_i < 3$~s) & 94.2 & 100.0 & 0.08 \\
+Scene Graph Attention only (No CF, No PIKV) & 5.8 & 0.0 & 0.20 \\
+CSGA without PIKV (unconstrained counterfactuals) & 100.0 & 0.0 & 0.51 \\
+CSGA + PIKV without causal gate input & 100.0 & 0.0 & 0.51 \\
+\textbf{PC-CSG Full (CSGA + PIKV + causal gate head)} & \textbf{100.0} & \textbf{0.0} & \textbf{0.92} \\
 \hline
 \end{tabular}
 }
 \end{table}
 
-As documented in Table~\ref{table_ablation}, the full PC-CSG framework achieves optimal anticipatory anomaly detection accuracy with complete false alarm suppression. Filtering unconstrained hypotheses via PIKV removes physically impossible predictions, reducing false positive interventions by 41.7\% while preserving true hazards.
+These numbers need careful reading. The TTC-only baseline has 94.2\% accuracy and 100\% FPR, so it flags every benign sample. The scene-graph-only variant has 5.8\% accuracy and 0\% FPR, so it flags nothing. Together these mean that about 94.2\% of the 120 samples are anomalous and only about 5.8\% (roughly 7 samples) are benign. On a split this imbalanced, the reactive baseline's high accuracy just means ``always say anomaly'', and the 100\% FPR shows the real problem: it cannot tell close but safe following from a real hazard. All three counterfactual variants classify every sample correctly, so the benefit of counterfactual risk scoring over TTC thresholding is clear here.
 
-\subsection{Comparison with State-of-the-Art Methods}
-Table~\ref{table_comparison} compares PC-CSG against recent benchmark paradigms in autonomous safety anticipation and trajectory modeling.
+The split cannot, however, separate the three counterfactual variants from each other. With only about 7 benign samples and no false positives even without PIKV, there were no false alarms left for PIKV to remove, so we \emph{cannot} measure a false-positive reduction from PIKV on this data. Proposition~2 still guarantees that PIKV never adds false alarms. The variant without causal gate input also gives exactly the same predictions as the full model, which is expected since the gate is not yet applied inside the attention (Section~\ref{section3}). Its latency differs (0.51 vs.\ 0.92~ms) only because the full-model run also counts PIKV rejections per hypothesis in a Python loop inside the timed region. We also tried to measure a mean warning lead time, but our evaluation code takes the minimum TTC over all nodes, including zero-padded empty slots, so the lead time came out as 0.00~s for every counterfactual variant. We therefore do not report a lead-time number. A bigger, balanced benchmark with a proper lead-time definition is the most important next step for this work.
 
-\begin{table}[H] 
-\caption{Architectural and capability comparison against benchmark methods on autonomous safety anticipation.}
+Figure~\ref{fig_scenarios} shows the four demo scenarios. Figure~\ref{fig_scenarios}(b) plots the measured CRT against the worst TTC on top of the hazard curve $H(\text{TTC})$. In Scenarios B--D the CRT sits almost on the curve, i.e.\ the counterfactual risk $R_{i,k}$ of a valid hypothesis is close to 1 and the hazard weight decides the final value. This agrees with the bound $\text{CRT}(t) \le \max_i H(v_i^t)$ from Eq.~(\ref{eq_crt}), and it also shows an important limitation. Since $H \ge 0.25$ requires $\text{TTC} \le 3 + 0.5 \ln 3 \approx 3.55$~s, PC-CSG in its current form cannot raise even a Level~1 advisory before the TTC to some agent drops below about 3.55~s. The counterfactual branch decides \emph{which} nearby agents and manoeuvres are dangerous and filters impossible ones, but the earliest possible warning is still set by the TTC gate.
+
+\begin{table}[H]
+\caption{Measured behaviour of PC-CSG on the four scripted demo scenarios.}
 \centering
-\label{table_comparison}
+\label{table_scenarios}
 \adjustbox{max width=\linewidth}{
-\begin{tabular}{l|c|c|c|c|c}
+\begin{tabular}{l|l|c|c|c|l}
 \hline
-\textbf{Method} & \textbf{Venue / Year} & \textbf{Counterfactual Reasoning} & \textbf{Physics Validation} & \textbf{Edge Latency} & \textbf{Execution Paradigm} \\
+\textbf{Scenario} & \textbf{Driving Context} & \textbf{Ego Speed} & \textbf{Worst TTC} & \textbf{CRT} & \textbf{Level / Action} \\
 \hline
-TTC-Only Reactive Baseline & Baseline & None & None & 0.15~ms & Real-Time Reactive \\
-CRiTIC \cite{ahmadi2025critic} & ICRA 2025 & None (Causal Gating) & None & 3.2~ms & Online Interaction \\
-CI-PINN \cite{zhang2026cipinn} & Systems 2026 & None & Kinematic Bicycle Residual & Offline & Post-hoc Reconstruction \\
-CICR \cite{han2025cicr} & J. Imaging 2025 & Front-door Intervention & None & 14.3~ms & Online Prediction \\
-SGPrior \cite{cong2025sgprior} & Electronics 2024 & None & Graph Consistency Assertion & 8.6~ms & Offline Verification \\
-PhysGuard \cite{shu2025physguard} & ECCV 2024 & None & Kinematic Layer & 5.1~ms & Trajectory Prediction \\
+A & Highway cruise, all clear & 100.1~km/h & 33.3~s & 0.000 & Level 0: nominal cruise \\
+B & Lead vehicle decelerating & 110.2~km/h & 4.1~s & 0.103 & Level 0: monitoring \\
+C & Lane-change swerve conflict & 119.9~km/h & 1.9~s & 0.894 & Level 4: AEB + MRM \\
+D & Barrier + hard lead braking & 100.1~km/h & 0.5~s & 0.987 & Level 4: full AEB \\
 \hline
-\textbf{Proposed PC-CSG} & \textbf{Elsevier 2026} & \textbf{6-Mode CSGA Attention} & \textbf{Differentiable PIKV Bicycle} & \textbf{6.68~ms (149.7 FPS)} & \textbf{Real-Time Anticipatory} \\
-\hline
-\end{tabular} 
+\end{tabular}
 }
 \end{table}
 
-As shown in Table~\ref{table_comparison}, existing trajectory and perception architectures lack the joint integration of real-time counterfactual reasoning, causal attention gating, and hard kinematic constraint validation. Methods such as CI-PINN \cite{zhang2026cipinn} operate in an offline regime for post-hoc trajectory reconstruction, while causal models like CRiTIC \cite{ahmadi2025critic} and CICR \cite{han2025cicr} do not embed differentiable vehicle dynamics layers to filter physically impossible predictions. In contrast, PC-CSG operates at 149.7~FPS on an automotive-grade NVIDIA RTX 3050 Laptop GPU, evaluating six counterfactual hypotheses per critical agent with rigorous physical validation in under 7~ms.
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    ybar, width=0.48\linewidth, height=6cm,
+    ylabel={CRT}, ymin=0, ymax=1.08,
+    xtick={1,2,3,4}, xticklabels={A, B, C, D},
+    xmin=0.4, xmax=4.6, bar width=16pt,
+    nodes near coords={\pgfmathprintnumber[fixed, fixed zerofill, precision=3]{\pgfplotspointmeta}},
+    every node near coord/.append style={font=\tiny},
+    tick label style={font=\footnotesize}, label style={font=\footnotesize},
+    title={\footnotesize (a) Measured CRT per scenario}]
+\fill[green!15] (axis cs:0.4,0) rectangle (axis cs:4.6,0.25);
+\fill[cyan!15] (axis cs:0.4,0.25) rectangle (axis cs:4.6,0.50);
+\fill[yellow!25] (axis cs:0.4,0.50) rectangle (axis cs:4.6,0.70);
+\fill[orange!25] (axis cs:0.4,0.70) rectangle (axis cs:4.6,0.85);
+\fill[red!20] (axis cs:0.4,0.85) rectangle (axis cs:4.6,1.08);
+\node[font=\tiny, anchor=west] at (axis cs:0.45,0.125) {L0};
+\node[font=\tiny, anchor=west] at (axis cs:0.45,0.375) {L1};
+\node[font=\tiny, anchor=west] at (axis cs:0.45,0.60) {L2};
+\node[font=\tiny, anchor=west] at (axis cs:0.45,0.775) {L3};
+\node[font=\tiny, anchor=west] at (axis cs:0.45,0.965) {L4};
+\addplot[fill=blue!55, draw=blue!70!black] coordinates {(1,0.000) (2,0.103) (3,0.894) (4,0.987)};
+\end{axis}
+\end{tikzpicture}
+\hfill
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.48\linewidth, height=6cm,
+    xlabel={Worst-case TTC (s)}, ylabel={$H(\text{TTC})$ / CRT},
+    xmin=0, xmax=6, ymin=0, ymax=1.05, domain=0.01:6, samples=121,
+    legend style={font=\tiny}, legend pos=north east,
+    tick label style={font=\footnotesize}, label style={font=\footnotesize},
+    grid=major, grid style={gray!25},
+    title={\footnotesize (b) CRT vs.\ hazard curve}]
+\addplot[thick, black] {1/(1+exp((x-3.0)/0.5))};
+\addlegendentry{$H(\text{TTC})$}
+\addplot[only marks, mark=*, mark size=2.2pt, red] coordinates {(4.1,0.103) (1.9,0.894) (0.5,0.987)};
+\addlegendentry{Measured CRT (B, C, D)}
+\addplot[thin, gray, dashed] coordinates {(3.55,0) (3.55,1.05)};
+\node[font=\tiny, anchor=south west] at (axis cs:4.1,0.103) {B};
+\node[font=\tiny, anchor=south west] at (axis cs:1.9,0.894) {C};
+\node[font=\tiny, anchor=north east] at (axis cs:0.5,0.987) {D};
+\node[font=\tiny, anchor=north west, gray] at (axis cs:3.55,0.6) {3.55 s};
+\end{axis}
+\end{tikzpicture}
+\captionsetup{singlelinecheck = false, format= hang, justification=justified, font=footnotesize, labelsep=space}
+\caption{Behaviour of PC-CSG on the four demo scenarios. (a) Measured CRT with the five intervention bands in the background (L0 nominal to L4 AEB + MRM). (b) Measured CRT against worst-case TTC, plotted on the hazard sigmoid $H(\text{TTC})$ with $\tau_{\text{crit}} = 3$~s and $\lambda_{\text{scale}} = 0.5$~s. Scenario A (TTC 33.3~s, CRT 0.000) lies outside the plotted range. The dashed line marks the largest TTC at which Level~1 can be reached.}
+\label{fig_scenarios}
+\end{figure}
 
-\section{Conclusion and future scope}
+\subsection{Comparison with State-of-the-Art Methods}
+We could not run the related methods on our data, and most of them address a different task (trajectory forecasting or offline scenario generation) with different metrics. A fair accuracy or latency comparison is therefore not possible here. Instead, Table~\ref{table_comparison} compares the \emph{capabilities} of the closest methods, based on how they are described in their papers.
+
+\begin{table}[H]
+\caption{Capability comparison with related methods, based on the descriptions in the original papers. Latency is given only for PC-CSG because the other papers do not report it on comparable hardware.}
+\centering
+\label{table_comparison}
+\adjustbox{max width=\linewidth}{
+\begin{tabular}{l|c|c|c|c|c|l}
+\hline
+\textbf{Method} & \textbf{Venue / Year} & \textbf{Counterfactual Hypotheses} & \textbf{Physics Check} & \textbf{Interaction Structure} & \textbf{Risk $\rightarrow$ Action} & \textbf{Setting} \\
+\hline
+TTC-only baseline & -- & No & No & No & Binary & Online, reactive \\
+CRiTIC \cite{ahmadi2025critic} & ICRA 2025 & No & No & Causal gating & No & Online prediction \\
+CICR \cite{han2025cicr} & J. Imaging 2025 & Yes (front-door) & No & Social context & No & Prediction \\
+Liao et al. \cite{liao2024physics} & IJCAI 2024 & No & Bicycle model & Interaction encoder & No & Prediction \\
+TPK \cite{baden2025tpk} & IV 2025 & No & Kinematic layer & Interaction priors & No & Prediction \\
+CounterScene \cite{jing2026counterscene} & arXiv 2026 & Yes (causal agent) & No & Causal interaction graph & No & Offline testing \\
+STRAP \cite{ning2025strap} & ITSC 2025 & No & No & Risk-field attention & No & Prediction \\
+\hline
+\textbf{PC-CSG (ours)} & -- & \textbf{Yes (6 modes)} & \textbf{PIKV (6 checks)} & \textbf{Scene graph} & \textbf{5 levels} & \textbf{Online, 6.68~ms} \\
+\hline
+\end{tabular}
+}
+\end{table}
+
+As Table~\ref{table_comparison} shows, the related methods each cover one or two of the pieces that PC-CSG combines. CRiTIC \cite{ahmadi2025critic} focuses on which agents matter, CICR \cite{han2025cicr} and CounterScene \cite{jing2026counterscene} generate counterfactual futures, and Liao et al. \cite{liao2024physics} and TPK \cite{baden2025tpk} make forecasts kinematically feasible. None of them turns physically checked counterfactual risk into graded driver-assistance actions in the perception loop. We see this combination, together with 6.68~ms per frame on a laptop GPU, as the main practical value of PC-CSG. We do not claim better forecasting accuracy than these methods, since we did not measure it.
+
+\section{Conclusion and future scope} \label{section5}
 % 1) Discuss what issue you have resolved, using what method, how much performance has improved in your proposed work from the existing and add 2 points for future directions.
-This paper presented the Physics-Constrained Counterfactual Scene Graph Transformer (PC-CSG), resolving the critical Anticipatory Perception Blindness gap in autonomous vehicle safety systems. By unifying counterfactual scene graph attention, physics-informed kinematic validation, and causal gating into a single real-time architecture, the system reasons about ``what-if'' scenarios before hazards materialize. The PIKV module eliminates 43.9\% of physically impossible trajectory hypotheses, reducing false positive interventions by 41.7\%. Operating at 149.7~FPS (6.68~ms total latency) on an NVIDIA RTX 3050 Laptop GPU, PC-CSG achieves optimal anticipatory anomaly detection accuracy with 2.84~seconds mean preemptive lead time, representing a paradigm shift from reactive to anticipatory autonomous perception.
+In this paper we presented PC-CSG, a pipeline that adds counterfactual ``what-if'' reasoning to the perception loop of an autonomous vehicle and keeps it physically grounded. A scene graph with CPA-based TTC and hazard weights picks the critical agents, CSGA generates and scores six counterfactual hypotheses for each of them, a kinematic bicycle model rolls them out, and PIKV removes the ones that break the friction circle or other vehicle limits before they reach the Counterfactual Risk Tensor. We proved that PIKV removes every friction-violating hypothesis from the risk score, that the physics layers do not depend on the reference frame, that PIKV can never add false alarms, and that the risk score escalates monotonically as the TTC decreases. The 372,068-parameter model runs in 6.68~ms (149.7~FPS) on an RTX 3050 Laptop GPU. PIKV rejected 46.0\% of 678 real hypotheses, and on our validation split PC-CSG reached 100.0\% accuracy with 0.0\% FPR, compared with 94.2\% accuracy and 100.0\% FPR for a reactive TTC-only baseline.
 
-Future research trajectories include:
+We also found clear limitations: the validation split is small and imbalanced and cannot separate our own variants, the causal gate is computed but not yet applied in the attention, the physics loss term gives no gradient, the earliest warning is still bounded by the TTC gate (about 3.55~s for Level~1), and we could not yet measure a reliable lead time. Fixing these is our first priority. Beyond that, we see two directions for future work:
 \begin{enumerate}
-    \item \textbf{Multi-Modal Counterfactual Fusion:} Extending CSGA to jointly reason over camera, LiDAR, and radar counterfactual scenarios, enabling physics-constrained anticipation under sensor degradation.
-    \item \textbf{V2X Cooperative Counterfactual Graphs:} Integrating Vehicle-to-Everything (V2X) communication to share counterfactual risk tensors across vehicles, enabling collective anticipatory safety beyond individual sensor range.
+    \item \textbf{Multi-modal counterfactual fusion:} Extending CSGA to reason jointly over camera, LiDAR and radar tracks, and evaluating it on nuScenes \cite{caesar2020nuscenes} and Waymo Open \cite{sun2020waymo}, so that counterfactual hypotheses stay reliable when one sensor degrades (rain, glare, night).
+    \item \textbf{V2X cooperative counterfactual graphs:} Sharing scene graphs and CRT values between vehicles and roadside units over Vehicle-to-Everything (V2X) links, so that a vehicle can include agents hidden from its own sensors (for example behind a truck) in its counterfactual reasoning.
 \end{enumerate}
 
 \bibliography{mybibfile}
